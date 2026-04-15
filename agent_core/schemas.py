@@ -3,34 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 
 
 @dataclass
 class DatasetBundle:
     name: str
-    display_name: str
     X: np.ndarray
-    y_true: np.ndarray | None
-    description: str
-    shape_family: str
-    feature_names: list[str]
+    y: np.ndarray | None = None
+    display_name: str = ""
+    description: str = ""
+    shape_family: str = "generic"  # e.g., "non_convex", "manifold"
+    feature_names: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ProfileReport:
-    sample_count: int
-    feature_count: int
-    negative_ratio: float
-    sparsity_ratio: float
-    avg_abs_correlation: float
-    manifold_hint: bool
-    non_convex_hint: bool
-    noise_sensitive_hint: bool
-    expected_clusters: int | None
-    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +28,26 @@ class ExpertRecommendation:
 
 
 @dataclass
+class ChatMessage:
+    role: str  # "user" or "assistant"
+    content: str
+
+
+@dataclass
+class ProfileReport:
+    sample_count: int
+    feature_count: int
+    negative_ratio: float
+    sparsity_ratio: float
+    avg_abs_correlation: float
+    manifold_hint: bool
+    non_convex_hint: bool
+    noise_sensitive_hint: bool
+    expected_clusters: int | None = None
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RoutingDecision:
     profile: ProfileReport
     selected_experts: list[ExpertRecommendation]
@@ -51,17 +56,14 @@ class RoutingDecision:
 
 @dataclass
 class AlgorithmRunResult:
+    algorithm_name: str
     expert_key: str
     expert_label: str
-    algorithm_name: str
-    params: dict[str, Any]
     labels: np.ndarray
-    metrics: dict[str, float | int | None]
-    narrative: str
-    code: str
+    metrics: dict[str, Any]
     plot_path: Path
-    artifacts: dict[str, Path] = field(default_factory=dict)
-    trace: list[str] = field(default_factory=list)
+    code: str = ""  # 存储执行的 Python 代码片段
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +76,6 @@ class SupervisorReport:
     ranking: list[AlgorithmRunResult]
     executive_summary: str
     decision_trace: list[str]
-    latex_path: Path
+    latex_path: Path | None = None
     llm_summary: str | None = None
-
+    response_type: str = "CLUSTER_TASK"  # "CLUSTER_TASK" 或 "FOLLOW_UP"

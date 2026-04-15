@@ -19,11 +19,12 @@ class DimensionExpert(BaseExpert):
             f"""
             from sklearn.cluster import KMeans
             from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
 
             scaled = StandardScaler().fit_transform(X)
             embedding = PCA(n_components=2, random_state=42).fit_transform(scaled)
             labels = KMeans(n_clusters={expected_clusters}, n_init=20, random_state=42).fit_predict(embedding)
-            metrics = evaluate_labels(embedding, y_true, labels)
+            metrics = evaluate_labels(embedding, y, labels)
             plot_path = save_cluster_plot(embedding, labels, output_path, "维度专家 - PCA + KMeans")
             result = {{
                 "labels": labels.tolist(),
@@ -48,20 +49,21 @@ class DimensionExpert(BaseExpert):
         )
 
         spectral_code = textwrap.dedent(
-            """
+            f"""
             from sklearn.cluster import KMeans
             from sklearn.manifold import SpectralEmbedding
+            from sklearn.preprocessing import StandardScaler
 
             scaled = StandardScaler().fit_transform(X)
             embedding = SpectralEmbedding(n_components=2, n_neighbors=18, random_state=42).fit_transform(scaled)
-            labels = KMeans(n_clusters=params["n_clusters"], n_init=20, random_state=42).fit_predict(embedding)
-            metrics = evaluate_labels(embedding, y_true, labels)
+            labels = KMeans(n_clusters={expected_clusters}, n_init=20, random_state=42).fit_predict(embedding)
+            metrics = evaluate_labels(embedding, y, labels)
             plot_path = save_cluster_plot(embedding, labels, output_path, "维度专家 - 谱嵌入 + KMeans")
-            result = {
+            result = {{
                 "labels": labels.tolist(),
                 "metrics": metrics,
                 "plot_path": plot_path,
-            }
+            }}
             """
         )
         results.append(

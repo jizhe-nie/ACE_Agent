@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass
 from typing import Any
-
+from loguru import logger
 
 SAFE_BUILTINS = {
     "__build_class__": __build_class__,
@@ -37,6 +38,7 @@ SAFE_BUILTINS = {
 class SandboxExecution:
     code: str
     result: dict[str, Any]
+    error: str | None = None
 
 
 class CoderSandbox:
@@ -44,8 +46,14 @@ class CoderSandbox:
 
     def run(self, code: str, context: dict[str, Any]) -> SandboxExecution:
         exec_env = {"__builtins__": SAFE_BUILTINS, "__name__": "__ace_sandbox__", **context}
-        exec(code, exec_env, exec_env)
-        result = exec_env.get("result")
-        if not isinstance(result, dict):
-            raise ValueError("Generated code did not expose a `result` dictionary.")
-        return SandboxExecution(code=code, result=result)
+        try:
+            # We use exec because we are running generated code in a controlled environment.
+            exec(code, exec_env, exec_env)
+            result = exec_env.get("result")
+            if not isinstance(result, dict):
+                raise ValueError("Generated code did not expose a `result` dictionary.")
+            return SandboxExecution(code=code, result=result)
+        except Exception as e:
+            err_msg = f"Sandbox execution failed: {str(e)}\n{traceback.format_exc()}"
+            logger.error(err_msg)
+            return SandboxExecution(code=code, result={}, error=err_msg)

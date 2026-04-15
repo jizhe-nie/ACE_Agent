@@ -5,4 +5,8 @@ matplotlib
 scikit-learn
 requests
 torch
+loguru
+pytest
+scipy
+python-dotenv
 

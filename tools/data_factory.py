@@ -8,6 +8,9 @@ from sklearn.datasets import make_blobs, make_moons, make_s_curve
 from ACE_Agent.agent_core.schemas import DatasetBundle
 
 
+import pandas as pd
+from loguru import logger
+
 DATASET_LABELS = {
     "blobs": "团状数据集",
     "moons": "月牙数据集",
@@ -15,7 +18,44 @@ DATASET_LABELS = {
     "smile": "笑脸数据集",
     "high_dim": "高维稀疏数据",
     "multi_view": "多视图无标签数据",
+    "custom": "自定义上传数据",
 }
+
+
+def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
+    path = Path(file_path)
+    logger.info(f"正在从文件加载自定义数据: {path}")
+    if path.suffix.lower() == ".csv":
+        df = pd.read_csv(path)
+    elif path.suffix.lower() in [".xls", ".xlsx"]:
+        df = pd.read_excel(path)
+    else:
+        raise ValueError(f"不支持的文件格式: {path.suffix}")
+
+    # 尝试自动识别特征和标签
+    # 假设最后一列是标签（如果是数值型且唯一值较少），或者全部作为特征
+    if df.iloc[:, -1].dtype in [object, int] and df.iloc[:, -1].nunique() < len(df) / 5:
+        X = df.iloc[:, :-1].values
+        y = df.iloc[:, -1].values
+        # 尝试编码标签
+        from sklearn.preprocessing import LabelEncoder
+        y = LabelEncoder().fit_transform(y)
+        feature_names = df.columns[:-1].tolist()
+    else:
+        X = df.values
+        y = None
+        feature_names = df.columns.tolist()
+
+    return DatasetBundle(
+        name="custom",
+        display_name=f"自定义数据 ({path.name})",
+        X=X.astype(float),
+        y=y if y is None else y.astype(int),
+        description=f"从文件 {path.name} 加载的自定义数据集，包含 {X.shape[0]} 个样本和 {X.shape[1]} 个特征。",
+        shape_family="unknown",
+        feature_names=feature_names,
+        metadata={"file_path": str(path)},
+    )
 
 
 def infer_dataset_from_prompt(prompt: str) -> str | None:
@@ -57,12 +97,13 @@ def generate_dataset(
             name="blobs",
             display_name=DATASET_LABELS["blobs"],
             X=X.astype(float),
-            y_true=y.astype(int),
+            y=y.astype(int),
             description="Three compact Gaussian-like groups. Ideal for centroid methods.",
             shape_family="spherical",
             feature_names=["x1", "x2"],
             metadata={"expected_clusters": 3},
         )
+
 
     if dataset_name == "moons":
         X, y = make_moons(n_samples=n_samples, noise=noise, random_state=random_state)
@@ -70,7 +111,7 @@ def generate_dataset(
             name="moons",
             display_name=DATASET_LABELS["moons"],
             X=X.astype(float),
-            y_true=y.astype(int),
+            y=y.astype(int),
             description="两个交错的月牙，具有非凸拓扑结构。",
             shape_family="non_convex",
             feature_names=["x1", "x2"],
@@ -85,7 +126,7 @@ def generate_dataset(
             name="s_curve",
             display_name=DATASET_LABELS["s_curve"],
             X=X.astype(float),
-            y_true=y.astype(int),
+            y=y.astype(int),
             description="A curved 3D manifold. Good for embedding plus clustering demos.",
             shape_family="manifold",
             feature_names=["x", "y", "z"],
@@ -107,7 +148,7 @@ def generate_dataset(
             name="high_dim",
             display_name=DATASET_LABELS["high_dim"],
             X=X.astype(float),
-            y_true=y.astype(int),
+            y=y.astype(int),
             description="100维空间中的5个簇。直接测距可能会遭遇维度灾难，非常适合考察降维与深度表征专家。",
             shape_family="spherical",
             feature_names=[f"f{i}" for i in range(100)],
@@ -136,7 +177,7 @@ def generate_dataset(
             name="multi_view",
             display_name=DATASET_LABELS["multi_view"],
             X=X.astype(float),
-            y_true=None,  # 完全无标签，测试系统自动降级到内部评估的能力
+            y=None,  # 完全无标签，测试系统自动降级到内部评估的能力
             description="无标签的多视角拼接数据（线性视角 + 非线性视角）。系统将仅依赖轮廓系数等无监督内部指标进行打分评估。",
             shape_family="manifold",
             feature_names=[f"v1_{i}" for i in range(10)] + [f"v2_{i}" for i in range(10)],
@@ -177,7 +218,7 @@ def _make_smile_dataset(n_samples: int, noise: float, random_state: int) -> Data
         name="smile",
         display_name=DATASET_LABELS["smile"],
         X=X.astype(float),
-        y_true=y,
+        y=y,
         description="A smiley-face style dataset with two eye clusters and one curved mouth cluster.",
         shape_family="non_convex",
         feature_names=["x1", "x2"],

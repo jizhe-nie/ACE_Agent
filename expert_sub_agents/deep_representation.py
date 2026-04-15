@@ -19,6 +19,7 @@ class DeepRepresentationExpert(BaseExpert):
             import torch
             import torch.nn as nn
             from sklearn.cluster import KMeans
+            from sklearn.preprocessing import StandardScaler
 
             torch.manual_seed(42)
             scaled = StandardScaler().fit_transform(X).astype("float32")
@@ -65,7 +66,7 @@ class DeepRepresentationExpert(BaseExpert):
 
             embedding = latent.numpy()
             labels = KMeans(n_clusters={expected_clusters}, n_init=20, random_state=42).fit_predict(embedding)
-            metrics = evaluate_labels(embedding, y_true, labels)
+            metrics = evaluate_labels(embedding, y, labels)
             plot_path = save_cluster_plot(embedding, labels, output_path, "深度专家 - 自动编码器 + KMeans")
             result = {{
                 "labels": labels.tolist(),
@@ -88,4 +89,3 @@ class DeepRepresentationExpert(BaseExpert):
                 ],
             )
         ]
-

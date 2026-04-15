@@ -12,17 +12,18 @@ class CentroidExpert(BaseExpert):
     label = "质心专家"
 
     def run(self, dataset: DatasetBundle, output_dir: Path) -> list[AlgorithmRunResult]:
-        expected_clusters = int(dataset.metadata.get("expected_clusters", 3))
+        expected_clusters = dataset.metadata.get("expected_clusters", 3)
         results = []
 
         kmeans_code = textwrap.dedent(
             f"""
             from sklearn.cluster import KMeans
+            from sklearn.preprocessing import StandardScaler
 
             scaled = StandardScaler().fit_transform(X)
             model = KMeans(n_clusters={expected_clusters}, n_init=20, random_state=42)
             labels = model.fit_predict(scaled)
-            metrics = evaluate_labels(X, y_true, labels)
+            metrics = evaluate_labels(X, y, labels)
             plot_path = save_cluster_plot(X, labels, output_path, "质心专家 - KMeans")
             result = {{
                 "labels": labels.tolist(),
@@ -53,7 +54,7 @@ class CentroidExpert(BaseExpert):
             scaled = StandardScaler().fit_transform(X)
             model = GaussianMixture(n_components={expected_clusters}, covariance_type="full", random_state=42)
             labels = model.fit_predict(scaled)
-            metrics = evaluate_labels(X, y_true, labels)
+            metrics = evaluate_labels(X, y, labels)
             plot_path = save_cluster_plot(X, labels, output_path, "质心专家 - GMM")
             result = {{
                 "labels": labels.tolist(),
@@ -77,4 +78,3 @@ class CentroidExpert(BaseExpert):
             )
         )
         return results
-

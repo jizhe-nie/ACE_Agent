@@ -18,12 +18,13 @@ class TopologyExpert(BaseExpert):
         dbscan_code = textwrap.dedent(
             """
             from sklearn.cluster import DBSCAN
+            from sklearn.preprocessing import StandardScaler
 
             scaled = StandardScaler().fit_transform(X)
             eps = estimate_dbscan_eps(scaled)
             model = DBSCAN(eps=eps, min_samples=6)
             labels = model.fit_predict(scaled)
-            metrics = evaluate_labels(X, y_true, labels)
+            metrics = evaluate_labels(X, y, labels)
             plot_path = save_cluster_plot(X, labels, output_path, "拓扑专家 - DBSCAN")
             result = {
                 "labels": labels.tolist(),
@@ -50,11 +51,12 @@ class TopologyExpert(BaseExpert):
         hac_code = textwrap.dedent(
             f"""
             from sklearn.cluster import AgglomerativeClustering
+            from sklearn.preprocessing import StandardScaler
 
             scaled = StandardScaler().fit_transform(X)
             model = AgglomerativeClustering(n_clusters={expected_clusters}, linkage="single")
             labels = model.fit_predict(scaled)
-            metrics = evaluate_labels(X, y_true, labels)
+            metrics = evaluate_labels(X, y, labels)
             plot_path = save_cluster_plot(X, labels, output_path, "拓扑专家 - HAC")
             result = {{
                 "labels": labels.tolist(),
@@ -78,4 +80,3 @@ class TopologyExpert(BaseExpert):
             )
         )
         return results
-
