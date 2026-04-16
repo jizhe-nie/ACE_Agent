@@ -31,13 +31,17 @@ class ACESupervisor:
 
     def run(
         self,
-        dataset: DatasetBundle,
+        dataset: DatasetBundle | None = None,
         user_prompt: str = "",
         llm_settings: LLMSettings | None = None,
         output_root: str | Path | None = None,
     ) -> SupervisorReport:
-        # 1. 意图识别
-        intent = self.router.analyze_intent(user_prompt, self.memory, llm_settings)
+        # 1. 意图识别 (如果 prompt 为空则默认为新任务)
+        if not user_prompt:
+            intent = "NEW_TASK"
+        else:
+            intent = self.router.analyze_intent(user_prompt, self.memory, llm_settings)
+        
         logger.info(f"意图识别结果: {intent}")
 
         # 2. 如果是追问且有历史报告，直接回答
@@ -45,10 +49,13 @@ class ACESupervisor:
             logger.info("检测到追问，从上一次报告中提取信息...")
             report = self._handle_follow_up(user_prompt, llm_settings)
             self.memory.append(ChatMessage(role="user", content=user_prompt))
-            self.memory.append(ChatMessage(role="assistant", content=report.llm_summary or ""))
+            self.memory.append(ChatMessage(role="assistant", content=report.llm_summary or "无 LLM 响应"))
             return report
 
         # 3. 正常执行新任务逻辑
+        if dataset is None:
+            raise ValueError("启动新任务 (NEW_TASK) 必须提供 dataset。")
+
         logger.info(f"开始执行新聚类任务: 数据集={dataset.display_name}")
         root = Path(output_root or Path(__file__).resolve().parents[1] / "outputs")
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -134,18 +141,39 @@ class ACESupervisor:
             context_data = self._llm_payload(report)
             history_text = "\n".join([f"{m.role}: {m.content}" for m in self.memory[-5:]])
             
+            # 修复：将复杂的格式化移出 f-string 表达式
+            ranking_text = [f"{r.algorithm_name}: score={r.metrics.get('score')}" for r in report.ranking[:5]]
+            
             prompt = (
                 f"你是一个资深数据分析专家。用户正在针对以下聚类分析结果进行追问。\n"
                 f"聚类分析摘要: {report.executive_summary}\n"
                 f"详细指标: {str(context_data.get('winning_metrics'))}\n"
+                f"全量排行榜: {ranking_text}\n"
                 f"决策过程: {str(report.decision_trace)}\n"
                 f"对话历史:\n{history_text}\n"
                 f"用户追问: {user_prompt}\n\n"
-                "请根据聚类结果和对话历史，专业地回答用户的追问。如果追问涉及具体算法参数或指标对比，请详细说明。"
+                "请结合数据指标（AMI、轮廓系数等）和聚类背景（如非凸结构、维度降维优势等），给出一个深度且专业的回答。"
             )
             report.llm_summary = client.summarize_report({"custom_request": prompt})
         else:
-            report.llm_summary = f"基于上次任务的结果（{report.dataset.display_name}），最优算法是 {report.ranking[0].algorithm_name}。目前 LLM 未配置，无法提供更深入的追问分析。"
+            # 基础规则辅助：无 LLM 时的对比逻辑
+            best = report.ranking[0]
+            runner_up = report.ranking[1] if len(report.ranking) > 1 else None
+            msg = (
+                f"【系统自动回复 (LLM 未启用)】：\n"
+                f"在 {report.dataset.display_name} 数据集下，{best.algorithm_name} 被选为优胜者，"
+                f"得分为 {float(best.metrics.get('score', 0.0)):.3f}。"
+            )
+            if runner_up:
+                diff = float(best.metrics.get('score', 0.0)) - float(runner_up.metrics.get('score', 0.0))
+                msg += f" 它优于次优算法 {runner_up.algorithm_name}（领先 {diff:.3f} 分）。"
+            
+            if "spectral" in best.algorithm_name.lower():
+                msg += "\n原因分析：Spectral (谱聚类) 结合降维能够通过特征分解捕获数据的非线性几何结构，而不仅仅是基于物理距离（如 KMeans），因此在复杂拓扑数据上表现更优。"
+            elif "dbscan" in best.algorithm_name.lower():
+                msg += "\n原因分析：DBSCAN 基于密度搜索，能够自动识别离群点且无需预设聚类数量，更适应噪声和不规则形状。"
+
+            report.llm_summary = msg
 
         report.response_type = "FOLLOW_UP"
         return report

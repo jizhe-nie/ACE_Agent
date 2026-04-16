@@ -15,6 +15,8 @@ SAFE_BUILTINS = {
     "dict": dict,
     "enumerate": enumerate,
     "float": float,
+    "getattr": getattr,
+    "hasattr": hasattr,
     "int": int,
     "isinstance": isinstance,
     "len": len,

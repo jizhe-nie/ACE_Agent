@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import os
 
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -16,6 +17,7 @@ from ACE_Agent.tools.data_factory import (
     generate_dataset,
     infer_dataset_from_prompt,
     list_demo_datasets,
+    load_custom_dataset,
 )
 from ACE_Agent.tools.llm_client import LLMSettings
 from ACE_Agent.tools.settings_store import load_settings, save_settings
@@ -29,34 +31,47 @@ def main() -> None:
     _init_state()
 
     st.title("ACE Agent")
-    st.caption("多 Agent 聚类 demo：主控路由、专家执行、指标评估、图文报告、LaTeX 输出。")
+    st.caption("具备主控路由、多专家执行、指标评估及图文报告生成的自动化聚类分析系统。")
 
-    control_col, info_col = st.columns([1.15, 1.0])
-    with control_col:
-        dataset_name = st.selectbox(
-            "Demo 数据集",
-            list_demo_datasets(),
-            format_func=lambda value: DATASET_LABELS[value],
-            key="selected_dataset",
-        )
-        sample_count = st.slider("样本数", min_value=180, max_value=900, value=480, step=30, key="sample_count")
-        noise = st.slider("噪声强度", min_value=0.01, max_value=0.18, value=0.06, step=0.01, key="noise")
-        seed = st.number_input("随机种子", min_value=0, max_value=9999, value=42, step=1, key="seed")
-    with info_col:
-        st.markdown(
-            """
-            **页面说明**
+    # 数据配置区
+    with st.expander("数据配置", expanded=True):
+        source_tab1, source_tab2 = st.tabs(["内置 Demo 数据", "上传自定义数据"])
+        
+        with source_tab1:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                dataset_name = st.selectbox(
+                    "选择数据集模板",
+                    [d for d in list_demo_datasets() if d != "custom"],
+                    format_func=lambda value: DATASET_LABELS[value],
+                    key="selected_dataset",
+                )
+            with col2:
+                sample_count = st.slider("样本数", min_value=180, max_value=2000, value=480, step=30, key="sample_count")
+            
+            col3, col4 = st.columns([1, 1])
+            with col3:
+                noise = st.slider("噪声强度", min_value=0.01, max_value=0.18, value=0.06, step=0.01, key="noise")
+            with col4:
+                seed = st.number_input("随机种子", min_value=0, max_value=9999, value=42, step=1, key="seed")
+            
+            uploaded_file = None
 
-            - 侧边栏保存 OpenAI 兼容接口配置，用户可以自行选择模型并保存。
-            - 对话区会展示主控 Agent 的总结。
-            - “决策轨迹 / 推理摘要”展示的是可解释的路由与实验过程，不是底层模型的原始隐式思维链。
-            """
-        )
+        with source_tab2:
+            st.markdown("上传 CSV 或 Excel 文件。系统将尝试自动识别特征列。")
+            uploaded_file = st.file_uploader("选择文件", type=["csv", "xlsx", "xls"])
+            if uploaded_file:
+                st.info(f"已就绪: {uploaded_file.name}")
+
+    if st.button("重置对话历史"):
+        st.session_state.messages = []
+        st.session_state.supervisor = ACESupervisor()
+        st.rerun()
 
     st.divider()
     _render_messages()
 
-    prompt = st.chat_input("例如：请分析笑脸数据，并比较拓扑方法和质心方法。")
+    prompt = st.chat_input("输入指令或进行追问（如：为什么 Spectral 算法表现最好？）")
     if prompt:
         _handle_prompt(
             prompt=prompt,
@@ -65,6 +80,7 @@ def main() -> None:
             noise=float(noise),
             seed=int(seed),
             settings=settings,
+            uploaded_file=uploaded_file,
         )
         st.rerun()
 
@@ -73,53 +89,26 @@ def _sidebar_settings() -> LLMSettings:
     saved = load_settings()
     st.sidebar.header("模型配置")
     enabled = st.sidebar.toggle(
-        "启用大模型润色",
+        "启用大模型润色/追问",
         value=bool(saved.get("enabled", False)),
-        help="关闭后依然可以完整运行聚类与报告流程，只是不调用外部模型生成润色摘要。",
     )
     base_url = st.sidebar.text_input("Base URL", value=saved.get("base_url", ""))
     api_key = st.sidebar.text_input("API Key", value=saved.get("api_key", ""), type="password")
     model = st.sidebar.text_input("Model", value=saved.get("model", ""))
-    temperature = st.sidebar.slider(
-        "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=float(saved.get("temperature", 0.2)),
-        step=0.05,
-    )
-    if st.sidebar.button("保存模型配置", use_container_width=True):
-        save_settings(
-            {
-                "enabled": enabled,
-                "base_url": base_url,
-                "api_key": api_key,
-                "model": model,
-                "temperature": temperature,
-            }
-        )
-        st.sidebar.success("配置已保存到 ACE_Agent/.ace_demo_config.json")
+    temperature = st.sidebar.slider("Temperature", 0.0, 1.0, float(saved.get("temperature", 0.2)))
+    
+    if st.sidebar.button("保存配置"):
+        save_settings({"enabled": enabled, "base_url": base_url, "api_key": api_key, "model": model, "temperature": temperature})
+        st.sidebar.success("配置已保存")
 
-    return LLMSettings(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        temperature=temperature,
-        enabled=enabled,
-    )
+    return LLMSettings(base_url=base_url, api_key=api_key, model=model, temperature=temperature, enabled=enabled)
 
 
 def _init_state() -> None:
     if "messages" not in st.session_state:
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "欢迎来到 ACE Agent demo。你可以直接在聊天框里说“请分析笑脸数据”或“帮我看看 S 形数据”，"
-                    "我会让主控 Agent 自动路由到合适的聚类专家。"
-                ),
-                "report": None,
-            }
-        ]
+        st.session_state.messages = []
+    if "supervisor" not in st.session_state:
+        st.session_state.supervisor = ACESupervisor()
 
 
 def _render_messages() -> None:
@@ -137,122 +126,100 @@ def _handle_prompt(
     noise: float,
     seed: int,
     settings: LLMSettings,
+    uploaded_file: any = None,
 ) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt, "report": None})
+    supervisor = st.session_state.supervisor
 
-    # 获取上一条报告（如果存在）
-    last_report = next((m["report"] for m in reversed(st.session_state.messages) if m["report"]), None)
+    # 1. 自动识别数据集逻辑
+    dataset = None
+    # 只有当 supervisor 认为这是 NEW_TASK 时，才需要加载数据集
+    # 我们先让 supervisor 决定意图
+    intent = supervisor.router.analyze_intent(prompt, supervisor.memory, settings)
     
-    # 意图判断：是否是针对已有报告的提问
-    is_question = any(q in prompt for q in ["为什么", "怎么", "如何", "解释", "哪个", "解释下"])
-    
-    if last_report and is_question:
-        with st.spinner("正在基于当前结果回答您的疑问..."):
-            if settings.is_configured:
-                # 调用 LLM 进行对话式回答
-                from ACE_Agent.tools.llm_client import OpenAICompatibleClient
-                client = OpenAICompatibleClient(settings)
-                # 构造一个简单的对话上下文
-                context_payload = {
-                    "question": prompt,
-                    "existing_report_summary": last_report.executive_summary,
-                    "metrics": [
-                        {"algo": r.algorithm_name, "score": r.metrics.get("score")} 
-                        for r in last_report.ranking[:3]
-                    ]
-                }
-                answer = client.summarize_report({"type": "follow_up", "data": context_payload})
-                if answer:
-                    st.session_state.messages.append({"role": "assistant", "content": answer, "report": None})
-                    return
+    if intent == "NEW_TASK":
+        if uploaded_file is not None:
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_path = tmp.name
+            try:
+                dataset = load_custom_dataset(tmp_path)
+                dataset.display_name = f"上传数据: {uploaded_file.name}"
+            finally:
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+        else:
+            inferred = infer_dataset_from_prompt(prompt)
+            active_dataset_name = inferred or default_dataset
+            dataset = generate_dataset(active_dataset_name, n_samples=sample_count, noise=noise, random_state=seed)
 
-    # 如果不是提问，或者是提问但没有配置 LLM/没有上文，则执行新聚类
-    inferred_dataset = infer_dataset_from_prompt(prompt) or default_dataset
-    dataset = generate_dataset(
-        dataset_name=inferred_dataset,
-        n_samples=sample_count,
-        noise=noise,
-        random_state=seed,
-    )
+    # 2. 调用 Supervisor
+    with st.spinner("ACE Agent 正在分析..." if intent == "FOLLOW_UP" else "正在调度专家运行聚类任务..."):
+        report = supervisor.run(dataset=dataset, user_prompt=prompt, llm_settings=settings)
 
-    with st.spinner("主控 Agent 正在调度专家并运行实验..."):
-        report = ACESupervisor().run(
-            dataset=dataset,
-            user_prompt=prompt,
-            llm_settings=settings,
-        )
-
+    # 3. 处理展示逻辑
     content = report.llm_summary or report.executive_summary
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": content,
-            "report": report,
-        }
-    )
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": content,
+        "report": report if report.response_type == "CLUSTER_TASK" else None
+    })
 
 
 def _render_report(report: SupervisorReport) -> None:
     top = report.ranking[0]
+    st.subheader(f"分析报告: {report.dataset.display_name}")
+    
     metric_cols = st.columns(4)
     metric_cols[0].metric("最佳算法", top.algorithm_name)
     metric_cols[1].metric("所属专家", top.expert_label)
     metric_cols[2].metric("综合得分", f"{float(top.metrics.get('score', 0.0)):.3f}")
     metric_cols[3].metric("AMI", _fmt_metric(top.metrics.get("ami")))
 
-    with st.expander("决策轨迹 / 推理摘要", expanded=True):
+    with st.expander("决策轨迹", expanded=False):
         for line in report.decision_trace:
             st.markdown(f"- {line}")
 
-    result_table = pd.DataFrame(
-        [
-            {
-                "expert": item.expert_label,
-                "algorithm": item.algorithm_name,
-                "score": round(float(item.metrics.get("score", 0.0)), 4),
-                "AMI": _float_or_none(item.metrics.get("ami")),
-                "Silhouette": _float_or_none(item.metrics.get("silhouette")),
-                "clusters": item.metrics.get("cluster_count"),
-                "noise_ratio": _float_or_none(item.metrics.get("noise_ratio")),
-            }
-            for item in report.ranking
-        ]
-    )
+    result_table = pd.DataFrame([
+        {
+            "专家": item.expert_label,
+            "算法": item.algorithm_name,
+            "综合得分": round(float(item.metrics.get("score", 0.0)), 4),
+            "AMI": _float_or_none(item.metrics.get("ami")),
+            "轮廓系数": _float_or_none(item.metrics.get("silhouette")),
+            "簇数量": item.metrics.get("cluster_count"),
+        }
+        for item in report.ranking
+    ])
     st.dataframe(result_table, use_container_width=True, hide_index=True)
 
     image_cols = st.columns(2)
     with image_cols[0]:
-        st.image(str(report.dataset_plot_path), caption=f"数据集预览：{report.dataset.display_name}", use_container_width=True)
+        st.image(str(report.dataset_plot_path), caption="原始数据分布", use_container_width=True)
     with image_cols[1]:
-        st.image(str(top.plot_path), caption=f"优胜方案结果：{top.expert_label} / {top.algorithm_name}", use_container_width=True)
-
-    with st.expander("查看 Top-3 子 Agent 代码", expanded=False):
-        for item in report.ranking[:3]:
-            st.markdown(f"**{item.expert_label} / {item.algorithm_name}**")
-            st.code(item.code, language="python")
+        st.image(str(top.plot_path), caption=f"优胜方案结果 ({top.algorithm_name})", use_container_width=True)
 
     latex_bytes = Path(report.latex_path).read_bytes()
     st.download_button(
-        "下载 LaTeX 报告",
+        "下载 PDF/LaTeX 报告",
         data=latex_bytes,
         file_name=report.latex_path.name,
         mime="application/x-tex",
         use_container_width=True,
-        key=f"dl_btn_{report.output_dir.name}"
+        key=f"dl_btn_{report.output_dir.name}_{hash(report.executive_summary)}"
     )
-    st.caption(f"输出目录：`{report.output_dir}`")
 
 
-def _fmt_metric(value: float | int | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"{float(value):.3f}"
+def _fmt_metric(value: any) -> str:
+    if value is None: return "n/a"
+    try: return f"{float(value):.3f}"
+    except: return str(value)
 
 
-def _float_or_none(value: float | int | None) -> float | None:
-    if value is None:
-        return None
-    return round(float(value), 4)
+def _float_or_none(value: any) -> float | None:
+    if value is None: return None
+    try: return round(float(value), 4)
+    except: return None
 
 
 if __name__ == "__main__":
