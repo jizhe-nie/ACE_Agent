@@ -1,64 +1,57 @@
 # ACE Agent (Automated Clustering Expert) 🛡️
 
-ACE Agent 是一个生产级的多智能体自主聚类分析系统。它不仅是一个自动化脚本，而是一个模拟资深数据科学家思维链条的智能体系统：**语义识别 → 任务编排 → 专家自愈执行 → 多维评估 → 知识发现。**
+ACE Agent 是一个生产级的、具备**自愈能力**的多智能体自主聚类分析系统。它将大语言模型（LLM）作为大脑，实现了从数据画像、意图路由到代码生成、自动调试及学术报告生成的全流程闭环。
 
-## 🚀 核心特性
+## 🚀 核心架构与特性
 
-### 1. 基于编排器 (Orchestrator) 的多代理架构
-系统由主控 (Master) 统一调度，专家 (Specialists) 各司其职：
-- **MasterRouter**: 纯 LLM 驱动的语义中枢，精准识别“新任务”与“深度追问”，彻底废除硬编码逻辑。
-- **Self-Correction Experts**: 专家智能体具备 **Think-Act-Fix** 循环能力。代码执行失败时，会自动结合 Traceback 错误信息进行自我 Debug，直至产出正确结果。
-- **Orchestrator (Supervisor)**：统筹全局生命周期，管理代理间的消息流与状态同步。
+### 1. Orchestrator-Worker 编排架构
+- **MasterRouter (决策中枢)**: 摒弃传统关键词匹配，采用纯语义识别。精准区分“新任务分析”与“历史追问解析”。
+- **ACESupervisor (全局编排)**: 维护会话状态与记忆，协调不同领域的专家 Agent。
+- **Self-Healing Experts (自愈专家)**: 核心专家 Agent (质心、拓扑等) 遵循 **Think-Act-Fix** 循环。当代码在沙箱中运行报错（如维度不匹配、API 变更）时，Agent 会分析 Traceback 并自动修复代码，上限 3 次重试。
 
-### 2. 沉浸式交互体验
-- **透明化思考流 (Thinking Trace)**：实时展示主控决策与专家纠错过程，让 AI 的每一步行动都清晰可见。
-- **持久化会话管理**：支持多轮对话历史保存与恢复（基于 JSON 存储，规划迁移至 SQLite）。
-- **多供应商配置中心**：内置支持 DeepSeek, 通义千问 (DashScope), Kimi (Moonshot), OpenAI, Gemini 等国内外主流大模型。
+### 2. 深度 EDA 与可视化
+- **Black-Dot 预览**: 支持上传数据后的即时特征分布预览，采用黑色点状图进行无偏展示。
+- **中文原生支持**: 针对 Windows 环境优化的字体注入技术，彻底解决 Matplotlib 图表乱码。
+- **性能优化**: 引入 `st.cache_data` 缓存机制，避免大数据集重复加载导致的性能损耗。
 
-### 3. 专业级分析与报告
-- **自愈式代码沙箱**: 在受限环境下安全执行 Python 代码，支持自动安装缺失逻辑与 Matplotlib 中文乱码修复。
-- **学术级报告生成**: 自动产出包含决策轨迹、指标排行、可视化分布的 LaTeX 与 PDF 报告。
-- **全量数据集支持**: 覆盖从合成数据（Moons, Smile）到真实世界大规模数据（MNIST, 20Newsgroups, UCI Mfeat）。
+### 3. 安全沙箱执行
+- **隔离环境**: 在受限的 Python 命名空间内执行生成代码，拦截 `__import__` 等高危操作。
+- **数据注入**: 无需文件读写，直接在内存中对接 NumPy 对象，规避文件路径报错。
 
 ---
 
-## 🛠️ 快速开始
+## 🏗️ 核心代码逻辑分布
 
-### 1. 环境准备
+- `agent_core/router.py`: LLM 意图判定逻辑。
+- `agent_core/supervisor.py`: 专家调度与结果聚合。
+- `expert_sub_agents/base.py`: **关键** - 定义了专家的自愈循环框架。
+- `tools/coder_sandbox.py`: 包含安全策略与中文字体配置。
+- `web_demo.py`: 基于 Streamlit 的交互式工作台。
+
+---
+
+## 🛠️ 部署指南
+
+### 环境依赖
 ```bash
-conda create -n ACE_Agent python=3.10
-conda activate ACE_Agent
+# 推荐 Python 3.10+
 pip install -r requirements.txt
-cp .env.example .env  # 在此处配置你的 API Key
+pip install charset-normalizer # 解决 Requests 依赖警告
 ```
 
-### 2. 启动 Web 交互界面
+### 运行
 ```bash
 streamlit run web_demo.py
 ```
-*在侧边栏底部的 ⚙️ Settings 中一键配置并切换不同的模型供应商。*
 
 ---
 
-## 🏗️ 系统架构图
-
-1.  **Agent Core (`agent_core/`)**:
-    - `router.py`: LLM 语义路由与意图决策。
-    - `supervisor.py`: 核心编排器，负责任务分发与结果汇编。
-2.  **Expert Sub-Agents (`expert_sub_agents/`)**:
-    - `base.py`: 定义自愈循环逻辑。
-    - `centroid_expert.py`: 质心专家。
-    - `topology_expert.py`: 拓扑专家。
-3.  **Tools (`tools/`)**:
-    - `llm_client.py`: 统一供应商适配器。
-    - `coder_sandbox.py`: 具备中文支持的受限执行环境。
-    - `settings_store.py`: 持久化存储引擎。
+## 📑 工程说明书
+项目根目录下包含 `ACE_Agent_Engineering_Handbook.tex`，该文档以学术级规格详细记录了系统的通信协议、自愈数学模型及复现路径。
 
 ---
 
-## 📝 最近更新
-- ✅ **架构跨越**: 完成从“自动化脚本”到“Orchestrator-Agent”模式的深度重构。
-- ✅ **专家自愈**: 实现了子代理的代码报错自动重写功能 (Max 3 retries)。
-- ✅ **全界面汉化**: 针对国内科研使用场景，优化了全中文交互界面。
-- ✅ **可视化增强**: 彻底解决了聚类图表在 Win32 环境下的中文乱码问题。
-- ✅ **历史存档**: 侧边栏支持会话历史列表显示与持久化保存。
+## 🔮 路线图 (Roadmap)
+- [ ] **RAG 理论增强 (Current Focus)**: 引入聚类专业知识库，使 Agent 具备引用学术文献的能力。
+- [ ] **Critic Agent (评审机制)**: 引入独立审计 Agent，对聚类质量进行数学层面的二次校验。
+- [ ] **多视图联动**: 支持 T-SNE / UMAP 等高级降维算法的自动选择与对比。
