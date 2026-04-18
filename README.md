@@ -51,7 +51,23 @@ streamlit run web_demo.py
 
 ---
 
-## 🔮 路线图 (Roadmap)
-- [ ] **RAG 理论增强 (Current Focus)**: 引入聚类专业知识库，使 Agent 具备引用学术文献的能力。
-- [ ] **Critic Agent (评审机制)**: 引入独立审计 Agent，对聚类质量进行数学层面的二次校验。
-- [ ] **多视图联动**: 支持 T-SNE / UMAP 等高级降维算法的自动选择与对比。
+## 🔮 发展路线图 (Roadmap 2024-2025)
+
+ACE Agent 的愿景是成为**数据科学领域的“自动驾驶仪”**。我们将分阶段实现从“自动化分析”到“智能化共创”的跨越：
+
+### 第一阶段：深度专家矩阵 (Short-term)
+- **[TODO] 维度专家 (Dimension Expert)**: 集成 PCA、t-SNE、UMAP 及 AutoEncoder。针对高维、稀疏数据自动决策降维路径，解决“维度灾难”。
+- **[TODO] 评价专家 (Critic Agent)**: 引入独立审计机制。不仅看轮廓系数，还将引入稳定性检验、重采样交叉验证等统计学指标对结果进行“二次质检”。
+- **[TODO] 深度表示专家**: 引入基于 PyTorch 的深度聚类 (Deep Clustering) 能力，支持图像与复杂非线性特征的自动提取。
+
+### 第二阶段：交互式创新 (Mid-term)
+- **[TODO] Human-in-the-Loop**: 允许用户对聚类结果进行在线标记，Agent 通过约束聚类 (Constrained Clustering) 实时微调算法权重。
+- **[TODO] 集成聚类 (Ensemble Consensus)**: 实现多算法并行后的“一致性融合”，通过 Meta-Clustering 显著提升结果的稳健性。
+- **[TODO] 参数演化预览**: 交互式展示参数空间对结果的影响（如 DBSCAN 的 Epsilon 扫描），由 Agent 给出最佳建议。
+
+### 第三阶段：学科特化与生态 (Long-term)
+- **[TODO] 行业 RAG 插件系统**: 提供“生信插件”、“金融审计插件”、“遥感插件”。用户可切换领域知识库，使 Agent 具备行业特有的“聚类直觉”。
+- **[TODO] ACE-as-a-Service**: 提供标准 RESTful API 接口，支持将 ACE 引擎集成到私有云或企业级 MLOps 流水线中。
+- **[TODO] 多模态支持**: 扩展至文本主题聚类与跨模态特征对齐聚类任务。
+
+---

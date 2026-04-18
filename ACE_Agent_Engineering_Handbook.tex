@@ -11,9 +11,9 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{tikz}
-\usetikzlibrary{shapes.geometric, arrows, positioning, shadows} % 修复：shadow -> shadows
+\usetikzlibrary{shapes.geometric, arrows, positioning, shadows}
 
-\title{\textbf{ACE Agent (Automated Clustering Expert) \\ 生产级智能体聚类系统工程手册}}
+\title{\textbf{ACE Agent (Automated Clustering Expert) \\ 生产级智能体聚类系统工程手册 v2.0}}
 \author{系统架构组 - Gemini CLI 实验室}
 \date{2026年4月17日}
 
@@ -47,100 +47,111 @@
 \maketitle
 
 \begin{abstract}
-本文档旨在为 ACE Agent 项目提供详尽的工程实现细节。ACE Agent 是一个基于 Orchestrator-Worker 架构的多智能体系统，专为自动化聚类分析设计。系统集成了语义路由、代码自愈、安全沙箱及学术报告生成等核心模块。通过本文档，开发者可以完整复现该系统，并理解大语言模型（LLM）如何在非确定性任务中实现工业级的稳定产出。
+本文档是 ACE Agent 的核心技术指南。系统采用 Orchestrator-Worker 架构，通过语义路由分发任务，并依靠专家智能体的自愈循环（Self-healing Loop）在隔离沙箱内生成并执行数据科学代码。本版本（v2.0）特别强化了对 RAG 知识检索、意图动态判定以及专家算法职责域的实现细节描述。
 \end{abstract}
 
 \tableofcontents
 \newpage
 
-\section{引言与背景}
-传统的自动化机器学习（AutoML）工具通常依赖硬编码的流水线，难以处理模糊的用户意图。ACE Agent 的设计目标是利用 LLM 的逻辑推理能力，构建一个具备“闭环纠错”能力的自愈系统。
+\section{核心架构与逻辑平面}
 
-\section{系统整体架构 (Architecture Deep Dive)}
+\subsection{语义路由 (MasterRouter) 的判定逻辑}
+\texttt{MasterRouter} 是系统的指挥中心，位于 \texttt{agent\_core/router.py}。它不依赖传统正则表达式，而是通过 LLM 语义分析将输入映射为 JSON 格式的意图对象。
 
-\subsection{Orchestrator-Worker 模式}
-系统核心遵循编排器模式，分为四个逻辑平面：
-\begin{enumerate}
-    \item \textbf{意图解析面 (The Router)}: 将自然语言（NLP）映射为计算意图。
-    \item \textbf{专家调度面 (The Orchestrator)}: 决定哪些专家参与任务，并管理记忆。
-    \item \textbf{代码执行面 (The Sandbox)}: 提供物理隔离的执行环境。
-    \item \textbf{成果综合面 (The Synthesizer)}: 聚合专家输出。
-\end{enumerate}
-
-\subsection{数据流拓扑图}
-\begin{center}
-\begin{tikzpicture}[node distance=2cm, auto]
-    \tikzstyle{block} = [rectangle, draw, fill=blue!10, text width=6em, text centered, rounded corners, minimum height=3em, drop shadow]
-    \tikzstyle{line} = [draw, -latex']
-    
-    \node [block] (user) {用户输入};
-    \node [block, right of=user, node distance=4cm] (router) {MasterRouter};
-    \node [block, below of=router] (orch) {Orchestrator};
-    \node [block, left of=orch, node distance=4cm] (expert) {Expert Agents};
-    \node [block, below of=expert] (sandbox) {CoderSandbox};
-    \node [block, below of=orch] (report) {报告生成器};
-
-    \path [line] (user) -- (router);
-    \path [line] (router) -- (orch);
-    \path [line] (orch) -- (expert);
-    \path [line] (expert) -- (sandbox);
-    \path [line] (sandbox) -- (expert);
-    \path [line] (expert) -- (orch);
-    \path [line] (orch) -- (report);
-\end{tikzpicture}
-\end{center}
-
-\section{核心功能模块详解}
-
-\subsection{语义路由与意图判定 (MasterRouter)}
-\texttt{agent\_core/router.py} % 修复：添加转义下划线
-模块不使用正则匹配，而是通过精心设计的 Prompt 引导 LLM 返回标准化的 JSON 对象。
-
-\subsection{专家自愈循环 (Self-Correction Loop)}
-在 \texttt{expert\_sub\_agents/base.py} 中实现的 \texttt{execute\_with\_self\_correction} 函数是系统的鲁棒性保障：
-如果代码报错，系统将 Traceback 截取后反馈给专家 Agent。
-
-\subsection{安全沙箱执行 (CoderSandbox)}
-\texttt{tools/coder\_sandbox.py} 通过 \texttt{exec()} 函数执行代码。
-
-\begin{lstlisting}[language=Python]
-exec_env = {
-    "X": dataset.X, 
-    "y": dataset.y, 
-    "np": np,       
-    "plt": plt,
-    "artifacts": {}, 
-    "__builtins__": SAFE_BUILTINS 
-}
-\end{lstlisting}
-
-\section{LLM 接入点与 Prompt 策略}
-
-\subsection{MasterRouter 提示词工程}
-核心在于“强制约束”：要求只返回 JSON 格式。
-
-\subsection{专家代码生成提示词}
-增加了“物理隔离约束”：禁止使用 \texttt{pd.read\_csv}。
-
-\section{函数调用时序与协作}
-
-\subsection{初始化阶段}
-\texttt{web\_demo.py} 初始化 \texttt{UniversalLLMClient} 与 \texttt{ACESupervisor}。
-
-\section{关键类与方法索引 (API Reference)}
-
+\paragraph{意图分类逻辑}
 \begin{itemize}
-    \item \texttt{UniversalLLMClient.chat\_completion}: 统一封装了调用协议。
-    \item \texttt{ACEJsonEncoder}: 解决 \texttt{numpy.ndarray} 序列化痛点。
-    \item \texttt{LatexReportGenerator.generate}: 渲染专业的 \LaTeX 源码。
+    \item \textbf{NEW\_TASK}: 当用户输入包含“分析”、“运行”、“聚类”或具体算法名（如“谱聚类”）时触发。
+    \item \textbf{FOLLOW\_UP}: 当输入包含“解释”、“为什么”、“可视化”或针对已有结果的追问时触发。
 \end{itemize}
 
-\section{复现与环境配置指南}
+\paragraph{函数实现细节：\texttt{analyze\_intent}}
+系统将最近 3 轮对话历史 (\texttt{history}) 压缩后连同当前 Prompt 送入 LLM，并使用正则 \texttt{re.search(r'\{.*\}', ...)} 强制提取 JSON 块。
 
-\subsection{环境配置}
-复现时需注意抑制 Windows MKL 内存泄漏警告。
+\subsection{主控编排器 (ACESupervisor) 的调度算法}
+\texttt{ACESupervisor} 负责协调知识引擎、路由与专家代理。
 
-\subsection{中文字体支持}
-在 Win32 环境下，必须显式设置中文字体。
+\paragraph{核心调度流 (\texttt{run} 方法)}
+\begin{enumerate}
+    \item \textbf{意图捕获}: 调用 \texttt{MasterRouter}。
+    \item \textbf{知识注入 (RAG)}: 调用 \texttt{KnowledgeEngine.query}，若匹配到学术背景，则将知识文本前置于用户 Prompt。
+    \item \textbf{专家激活}: 
+        \begin{itemize}
+            \item 如果是 \texttt{FOLLOW\_UP}，直接进入 LLM 回答逻辑。
+            \item 如果是 \texttt{NEW\_TASK}，并发激活 \texttt{CentroidExpert} 和 \texttt{TopologyExpert}。
+        \end{itemize}
+    \item \textbf{评分与摘要}: 对所有算法结果按 \texttt{metrics['score']} 降序排列，取首位作为优胜算法生成摘要。
+\end{enumerate}
+
+\section{专家智能体实现细节 (Worker Implementation)}
+
+\subsection{专家职责域划分}
+系统将算法按数学逻辑划分为两个主要专家：
+\begin{itemize}
+    \item \textbf{质心专家 (CentroidExpert)}: 负责 KMeans, GMM, MiniBatchKMeans。
+    \item \textbf{拓扑专家 (TopologyExpert)}: 负责 DBSCAN, SpectralClustering (谱聚类), Agglomerative, OPTICS。
+\end{itemize}
+
+\subsection{自愈循环 (Self-Correction Loop) 实现}
+实现在 \texttt{expert\_sub\_agents/base.py} 的 \texttt{execute\_with\_self\_correction} 方法中。
+
+\paragraph{算法流程}
+\begin{lstlisting}[language=Python]
+for attempt in range(1, 4):
+    code = generate_or_fix_code(prompt, error_msg)
+    run_result = sandbox.execute(code, X, y)
+    if run_result.success:
+        save_artifacts()
+        return results
+    else:
+        extract_traceback() # 提取最后 200 字符报错
+\end{lstlisting}
+
+\section{RAG 知识引擎 (Knowledge Engine)}
+
+\subsection{知识扫描与去重}
+\texttt{KnowledgeEngine} 使用 \texttt{ingested\_manifest.json} 维护一个 MD5 哈希列表。扫描 \texttt{docs/} 目录时，仅处理哈希值变动或新增的文件。
+
+\subsection{向量检索配置}
+\begin{itemize}
+    \item \textbf{Embedding 模型}: \texttt{all-MiniLM-L6-v2} (本地运行)。
+    \item \textbf{持久化库}: ChromaDB。
+    \item \textbf{环境变量注入}: 强制设置 \texttt{HF\_HUB\_OFFLINE=1} 以确保离线环境下的启动速度。
+\end{itemize}
+
+\section{安全沙箱与代码隔离 (CoderSandbox)}
+
+\subsection{执行环境构造}
+在 \texttt{tools/coder\_sandbox.py} 中，通过 \texttt{exec()} 运行代码前会初始化一个受限字典 \texttt{exec\_env}。
+
+\paragraph{注入变量清单}
+\begin{itemize}
+    \item \texttt{X, y}: 内存中的 numpy 数组。
+    \item \texttt{plt, np}: 预导入的数据科学库。
+    \item \texttt{artifacts}: 空字典，用于专家回传结果。
+\end{itemize}
+
+\paragraph{输出捕获机制}
+专家生成的代码必须将结果存入 \texttt{artifacts['算法名']}，包含 \texttt{labels}、\texttt{metrics} 和 \texttt{plot\_path} 三个必填字段，否则会被判定为执行失败。
+
+\section{API 参考手册 (API Reference)}
+
+\subsection{\texttt{UniversalLLMClient}}
+\begin{itemize}
+    \item \texttt{chat\_completion(messages, system\_prompt)}: 具备自动重试机制的通用接口。
+    \item \texttt{summarize\_report(payload)}: 接收 \texttt{user\_intent} 参数，实现意图优先的报告摘要。
+\end{itemize}
+
+\subsection{\texttt{LatexReportGenerator}}
+\begin{itemize}
+    \item \texttt{generate(report)}: 动态扫描 \texttt{report.results}，为每个算法生成 \texttt{\textbackslash subsection}，并将 \texttt{plot\_path} 转换为 \LaTeX 路径。
+\end{itemize}
+
+\section{部署与排烟测试}
+
+\subsection{中文字体支持方案}
+由于在 Windows 环境下 \texttt{matplotlib} 默认不识别中文，系统在启动时会检测 \texttt{Win32} 平台并尝试加载“微软雅黑”或“黑体”。
+
+\subsection{离线模式 (Offline Mode)}
+通过屏蔽 \texttt{transformers} 的日志输出 (\texttt{VERBOSITY=error})，解决了大规模知识库加载时的终端卡顿问题。
 
 \end{document}

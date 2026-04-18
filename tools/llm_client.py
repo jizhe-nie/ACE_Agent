@@ -64,9 +64,12 @@ class UniversalLLMClient:
     def summarize_report(self, summary_payload: dict[str, Any]) -> str | None:
         """旧接口兼容逻辑，内部调用新的 chat_completion"""
         system_prompt = (
-            "你是一个 ACE 聚类分析助手。你的任务有两个：\n"
-            "1. 如果输入是聚类报告详情，请用简洁的中文总结。提到优胜算法及其原因，并建议用户接下来可以观察什么。\n"
-            "2. 如果输入包含用户针对已有报告的提问（follow_up 类型），请结合已有的聚类结果和指标，给出专业且有说服力的回答。不要编造数据。"
+            "你是一个 ACE 聚类分析助手。你的任务是根据聚类实验结果生成专业的中文总结。\n"
+            "关键要求：\n"
+            "1. 必须优先响应用户意图 (user_intent)。如果用户要求使用特定算法，你的总结应重点围绕该算法的表现展开。\n"
+            "2. 如果用户指定的算法表现不如其他算法（如 KMeans），应客观指出，并简要对比差异，但不能忽略用户的要求。\n"
+            "3. 提到优胜算法 (best_algo) 及其评分，并给出后续行动建议。\n"
+            "4. 保持专业、简洁、有说服力。不要编造数据。"
         )
         messages = [{"role": "user", "content": json.dumps(summary_payload, ensure_ascii=False)}]
         return self.chat_completion(messages, system_prompt)

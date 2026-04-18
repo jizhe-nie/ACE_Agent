@@ -3,9 +3,16 @@ from pathlib import Path
 import sys, os, uuid, json
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import os
+os.environ["OMP_NUM_THREADS"] = "1" # 抑制 KMeans 警告
+
 import pandas as pd
+
 import streamlit as st
+import matplotlib.pyplot as plt
 from ACE_Agent.agent_core.supervisor import ACESupervisor
+
 from ACE_Agent.tools.data_factory import (
     DATASET_LABELS, generate_dataset, infer_dataset_from_prompt,
     list_demo_datasets, load_custom_dataset
@@ -15,9 +22,14 @@ from ACE_Agent.tools.settings_store import SettingsStore, SessionManager, DEFAUL
 
 st.set_page_config(page_title="ACE Agent", layout="wide", initial_sidebar_state="expanded")
 
+@st.cache_resource
+def _get_supervisor():
+    sv = ACESupervisor()
+    return sv
+
 def _init_state():
     for k, v in {"current_session_id": str(uuid.uuid4()), "messages": [], 
-                 "supervisor": ACESupervisor(), "settings_store": SettingsStore(), 
+                 "supervisor": _get_supervisor(), "settings_store": SettingsStore(), 
                  "session_manager": SessionManager()}.items():
         if k not in st.session_state: st.session_state[k] = v
 
@@ -64,6 +76,46 @@ def main():
             noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01)
             seed = c4.number_input("随机种子", 0, 9999, 42)
         with t2: uploaded_file = st.file_uploader("上传 CSV/Excel", type=["csv", "xlsx", "xls"])
+
+        # 新增：数据即时预览功能
+        if st.button("🔍 预览数据分布", use_container_width=True) or uploaded_file:
+            st.divider()
+            with st.spinner("正在绘制原始分布..."):
+                preview_ds = None
+                if uploaded_file:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
+                        tmp.write(uploaded_file.getvalue()); tmp_path = tmp.name
+                    preview_ds = load_custom_dataset(tmp_path)
+                    os.remove(tmp_path)
+                else:
+                    preview_ds = generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
+                
+                if preview_ds:
+                    st.subheader(f"数据预览: {preview_ds.display_name}")
+                    pc1, pc2 = st.columns([0.7, 0.3])
+                    with pc1:
+                        # 解决中文乱码
+                        import platform
+                        if platform.system() == "Windows":
+                            plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
+                        plt.rcParams['axes.unicode_minus'] = False
+                        
+                        fig, ax = plt.subplots(figsize=(8, 4.5))
+                        # 如果是高维数据，提醒用户只展示了前两个特征
+                        ax.scatter(preview_ds.X[:, 0], preview_ds.X[:, 1], c='black', s=10, alpha=0.5, edgecolors='none')
+                        ax.set_title(f"原始特征空间分布 (特征1 vs 特征2)", fontsize=10)
+                        ax.set_xlabel("Feature 1")
+                        ax.set_ylabel("Feature 2")
+                        ax.grid(True, linestyle=':', alpha=0.6)
+                        st.pyplot(fig)
+                        plt.close(fig) # 释放内存
+                    with pc2:
+                        st.write("📈 **数据统计**")
+                        st.metric("样本总数", preview_ds.X.shape[0])
+                        st.metric("特征维度", preview_ds.X.shape[1])
+                        st.info("提示：请在下方输入指令（如：'分析这个数据集'）来启动智能体聚类任务。")
+
     _render_messages()
     if prompt := st.chat_input("输入指令，例如：使用谱聚类分析这个数据集..."):
         _handle_prompt(prompt, ds_name, sc, noise, seed, settings, uploaded_file)
@@ -75,11 +127,26 @@ def _render_messages():
             if m.get("thought"):
                 with st.expander("💭 代理思考流 (Thinking Trace)", expanded=False):
                     for line in m["thought"].split("\n"):
-                        if "失败" in line or "错误" in line: st.error(line)
+                        if "【RAG】" in line: st.info(line) # 突出显示 RAG 信息
+                        elif "失败" in line or "错误" in line: st.error(line)
                         elif "成功" in line: st.success(line)
                         else: st.write(line)
             st.markdown(m["content"])
             if m.get("report"): _render_report(m["report"])
+
+@st.cache_data
+def _cached_load_custom(file_bytes, file_name):
+    import tempfile
+    suffix = Path(file_name).suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        ds = load_custom_dataset(tmp_path)
+        ds.display_name = f"上传: {file_name}"
+        return ds
+    finally:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
 
 def _handle_prompt(prompt, ds_name, sc, noise, seed, settings, uploaded_file):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -95,11 +162,7 @@ def _handle_prompt(prompt, ds_name, sc, noise, seed, settings, uploaded_file):
             if intent.get("intent") == "NEW_TASK":
                 st.write("📊 正在画像并准备数据集...")
                 if uploaded_file:
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
-                        tmp.write(uploaded_file.getvalue()); tmp_path = tmp.name
-                    try: dataset = load_custom_dataset(tmp_path); dataset.display_name = f"上传: {uploaded_file.name}"
-                    finally: (os.remove(tmp_path) if os.path.exists(tmp_path) else None)
+                    dataset = _cached_load_custom(uploaded_file.getvalue(), uploaded_file.name)
                 else:
                     inferred = infer_dataset_from_prompt(prompt)
                     dataset = generate_dataset(inferred or ds_name, n_samples=sc, noise=noise, random_state=seed)
