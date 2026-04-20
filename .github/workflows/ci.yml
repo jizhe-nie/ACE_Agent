@@ -1,0 +1,72 @@
+name: ACE Agent CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run ruff (lint)
+        run: ruff check . --output-format=github
+
+      - name: Run mypy (type check — lenient)
+        run: mypy . --config-file mypy.ini
+        continue-on-error: true  # TODO(Phase 1): harden mypy once stubs are complete
+
+  test:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        # Run from parent directory so that `ACE_Agent.*` imports resolve correctly.
+        # --cov-fail-under is set to 30 to match current baseline; raise to 60 in Phase 1
+        # after test suite is expanded.
+        # TODO(Phase 1): raise --cov-fail-under to 60 once dedicated unit tests are added
+        run: |
+          cd ..
+          pytest ACE_Agent/tests/ \
+            --cov=ACE_Agent \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=30 \
+            -v
+        working-directory: ${{ github.workspace }}
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false

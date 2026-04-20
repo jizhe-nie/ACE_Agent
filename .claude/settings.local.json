@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/PycharmProject/**)",
+      "Bash(python -m pytest --co -q ACE_Agent/tests/)",
+      "Bash(python -m pytest ACE_Agent/tests/test_core.py -v)",
+      "Bash(python -m pytest ACE_Agent/tests/test_follow_up.py -v)",
+      "Bash(python -m ruff check . --select E,F --ignore E501)",
+      "Bash(conda env *)",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -c \"import tiktoken; print\\('tiktoken ok'\\)\")",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -c \"import psutil; print\\('psutil ok'\\)\")",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -m pip install psutil tiktoken pytest-cov ruff mypy types-requests)",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -m pytest ACE_Agent/tests/test_core.py -v)",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -m ruff check /d/PycharmProject/ACE_Agent/)",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe -m mypy ACE_Agent/ --config-file ACE_Agent/mypy.ini)",
+      "Bash(C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe *)",
+      "Bash(python *)",
+      "Bash(git stash *)",
+      "Bash(conda run *)",
+      "Bash(\"C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe\" -m pytest tests/test_sandbox_rescue.py tests/test_soft_failure_diagnosis.py -v)",
+      "Bash(\"C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe\" -m pytest -q)",
+      "Bash(\"C:/Users/Administrator/anaconda3/envs/Tumor_Subtype_Agent/python.exe\" -m pytest ACE_Agent/tests/test_zoo_score_priority.py -v)"
+    ]
+  }
+}

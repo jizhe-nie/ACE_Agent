@@ -1,91 +1,47 @@
+"""
+expert_sub_agents/deep_representation.py
+=======================================
+Deep Representation Expert: Specialized in deep clustering methods
+(AutoEncoders, DEC, IDEC) using PyTorch.
+
+Integrated with the self-healing Think-Act-Fix loop (Phase 3 Prep).
+"""
 from __future__ import annotations
 
-import textwrap
-from pathlib import Path
-
-from ACE_Agent.agent_core.schemas import AlgorithmRunResult, DatasetBundle
+from ACE_Agent.agent_core.schemas import DatasetBundle
 from ACE_Agent.expert_sub_agents.base import BaseExpert
+from ACE_Agent.tools.llm_client import UniversalLLMClient
 
 
 class DeepRepresentationExpert(BaseExpert):
-    key = "deep"
-    label = "深度表征专家"
+    """专家：专注于利用神经网络（PyTorch）进行深度聚类。"""
 
-    def run(self, dataset: DatasetBundle, output_dir: Path) -> list[AlgorithmRunResult]:
-        expected_clusters = int(dataset.metadata.get("expected_clusters", 3))
+    def __init__(self) -> None:
+        super().__init__("deep", "深度表征专家")
 
-        autoencoder_code = textwrap.dedent(
-            f"""
-            import torch
-            import torch.nn as nn
-            from sklearn.cluster import KMeans
-            from sklearn.preprocessing import StandardScaler
-
-            torch.manual_seed(42)
-            scaled = StandardScaler().fit_transform(X).astype("float32")
-            tensor_x = torch.tensor(scaled)
-
-            class AutoEncoder(nn.Module):
-                def __init__(self, input_dim, latent_dim=2):
-                    super().__init__()
-                    self.encoder = nn.Sequential(
-                        nn.Linear(input_dim, 16),
-                        nn.ReLU(),
-                        nn.Linear(16, 8),
-                        nn.ReLU(),
-                        nn.Linear(8, latent_dim),
-                    )
-                    self.decoder = nn.Sequential(
-                        nn.Linear(latent_dim, 8),
-                        nn.ReLU(),
-                        nn.Linear(8, 16),
-                        nn.ReLU(),
-                        nn.Linear(16, input_dim),
-                    )
-
-                def forward(self, value):
-                    latent = self.encoder(value)
-                    reconstructed = self.decoder(latent)
-                    return latent, reconstructed
-
-            model = AutoEncoder(input_dim=scaled.shape[1], latent_dim=2)
-            optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-            criterion = nn.MSELoss()
-
-            model.train()
-            for _ in range(80):
-                optimizer.zero_grad()
-                latent, reconstructed = model(tensor_x)
-                loss = criterion(reconstructed, tensor_x)
-                loss.backward()
-                optimizer.step()
-
-            model.eval()
-            with torch.no_grad():
-                latent, _ = model(tensor_x)
-
-            embedding = latent.numpy()
-            labels = KMeans(n_clusters={expected_clusters}, n_init=20, random_state=42).fit_predict(embedding)
-            metrics = evaluate_labels(embedding, y, labels)
-            plot_path = save_cluster_plot(embedding, labels, output_path, "深度专家 - 自动编码器 + KMeans")
-            result = {{
-                "labels": labels.tolist(),
-                "metrics": metrics,
-                "plot_path": plot_path,
-            }}
-            """
+    def _generate_code(
+        self,
+        client: UniversalLLMClient,
+        dataset: DatasetBundle,
+        prompt: str,
+    ) -> str:
+        system_prompt = (
+            "你是一个 Python 数据科学专家（深度聚类分支）。\n"
+            "你的职责：利用神经网络（PyTorch）提取非线性特征并执行聚类。\n"
+            "任务要求：\n"
+            f"1. 分析用户意图：'{prompt}'\n"
+            f"2. 数据画像：{dataset.description}，样本量：{dataset.X.shape[0]}，特征数：{dataset.X.shape[1]}。\n"
+            "3. 核心逻辑：\n"
+            "   - 设计一个简单的 AutoEncoder (AE) 或 DEC 结构的 PyTorch 模型。\n"
+            "   - 实现训练循环（注意：epoch 数不宜过大，建议 20-50 轮以保证沙箱响应）。\n"
+            "   - 在潜空间（Latent Space）执行 KMeans 聚类。\n"
+            "   - 必须包含设备检测：优先使用 cuda，若不可用则回退到 cpu。\n"
+            "4. 输入变量：直接使用内存中的 X (numpy.ndarray)。\n"
+            "5. 输出要求：结果必须写入 artifacts[algo_name]，包含 labels, metrics, plot_path。\n"
+            "只返回 Python 代码，不要有任何解释。"
         )
-        return [
-            self._execute_code(
-                dataset=dataset,
-                output_dir=output_dir,
-                algorithm_name="AutoEncoderPlusKMeans",
-                params={"latent_dim": 2, "epochs": 80, "n_clusters": expected_clusters},
-                code=autoencoder_code,
-                plot_filename=f"{dataset.name}_deep_autoencoder_kmeans.png",
-                trace=[
-                    "训练了一个小型自动编码器来学习非线性 2D 潜空间。",
-                    "对潜码使用 KMeans 进行聚类，作为轻量级的深度聚类代理方案。",
-                ],
-            )
-        ]
+        user_input = f"为该数据集生成 PyTorch 深度聚类管线。"
+        return client.chat_completion(
+            [{"role": "user", "content": user_input}],
+            system_prompt,
+        ).strip()

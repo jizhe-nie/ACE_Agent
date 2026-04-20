@@ -26,6 +26,9 @@ def _latex_escape(text: str) -> str:
 
 class LatexReportGenerator:
     def generate(self, report: SupervisorReport) -> Path:
+        # P0.5-C: CODE_EXAMPLE 类型不生成 LaTeX 报告，直接跳过
+        if report.response_type == "CODE_EXAMPLE":
+            raise ValueError("CODE_EXAMPLE 类型不生成 LaTeX 报告。")
         tex_path = report.output_dir / "ace_report.tex"
         dataset_plot = report.dataset_plot_path.name.replace("\\", "/")
         rows = []
