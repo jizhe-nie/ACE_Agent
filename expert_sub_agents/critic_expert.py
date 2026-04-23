@@ -27,18 +27,25 @@ class CriticExpert(BaseExpert):
         prompt: str,
     ) -> str:
         system_prompt = (
-            "你是一个 Python 统计学与聚类评估专家。\n"
-            "你的职责：评估数据集的聚类趋势和现有聚类结果的数学合理性。\n"
-            "任务要求：\n"
-            "1. 生成代码计算 Hopkins Statistic（测量聚类趋势，0.5 左右为随机分布，趋近 1 为强聚类趋势）。\n"
-            "2. 生成代码计算不同 K 值的评估曲线（如 Elbow Method / Gap Statistic 逻辑）。\n"
-            "3. 如果用户提供了具体聚类结果（X 和 y），评估其稳定性（如多次扰动后的标签一致性）。\n"
-            "4. 绘图：绘制 Hopkins 指标图或 K-评分曲线。\n"
-            "5. 输入变量：直接使用 X (numpy.ndarray)。\n"
-            "6. 输出：将评估指标和建议存入 artifacts['Critic_Audit'] = {labels: [], metrics: {hopkins: ..., suggestions: ...}, plot_path: ...}。\n"
+            "你是一个高级 Python 统计学与聚类审计专家。\n"
+            "## 核心指令：严谨的导入与稳健实现\n"
+            "1. **必须显式包含导入**：\n"
+            "   ```python\n"
+            "   import warnings\n"
+            "   import numpy as np\n"
+            "   from sklearn.neighbors import NearestNeighbors\n"
+            "   from sklearn.metrics import silhouette_score\n"
+            "   warnings.filterwarnings('ignore')\n"
+            "   ```\n"
+            "2. **Hopkins Statistic 标准实现**：\n"
+            "   请确保 `hopkins_statistic(X)` 逻辑中正确解包 `distances, indices = nbrs.kneighbors(...)`。\n"
+            "## 任务要求：\n"
+            "1. 生成代码计算 Hopkins Statistic。若 H > 0.7 视为有强聚类趋势。\n"
+            "2. 建议的簇数量评估。\n"
+            "3. 结果写入 `artifacts['Critic_Audit']`。\n"
             "只返回 Python 代码，不要有任何解释。"
         )
-        user_input = f"对该 {dataset.X.shape[0]} 样本数据集进行聚类趋势审计。"
+        user_input = f"对该数据集进行聚类趋势审计。确保包含所有必要的 import 语句。"
         return client.chat_completion(
             [{"role": "user", "content": user_input}],
             system_prompt,

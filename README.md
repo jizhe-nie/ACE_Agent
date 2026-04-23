@@ -57,9 +57,12 @@ ACE Agent 的愿景是成为**数据科学领域的“自动驾驶仪”**。
 
 ### 第一阶段：评估闭环与维度感知 (Phase 1 - DONE)
 - **[DONE] 维度专家 (Dimension Expert)**: 实现 PCA / SpectralEmbedding 管线，已完全适配 Think-Act-Fix 自愈框架。
-- **[DONE] 评价专家 (Critic Agent)**: 引入独立审计机制。实现 Hopkins Statistic (聚类趋势) 审计与 K-稳定性校验，为聚类结果提供数学层面的“二次质检”。
-- **[DONE] 深度表示专家**: 基于 PyTorch 的 AE + KMeans 骨架已就位，支持非线性特征提取与设备（CUDA/CPU）自适应。
-- **[DONE] 智能调度升级**: `ACESupervisor` 实现维度感知逻辑，处理 >2D 高维数据时自动激活维度专家进行预处理。
+- **[DONE] 评价专家 (Critic Agent)**: 引入独立审计机制。实现 Hopkins Statistic (聚类趋势) 审计。修复了邻域解包错误，支持 `audit_suggestion` 产出。
+- **[DONE] 深度表示专家**: 基于 PyTorch 的 AE + KMeans 骨架已就位，支持非线性特征提取。
+- **[DONE] 智能调度与自适应**:
+    - **启发式调参**: `TopologyExpert` 现在具备使用 K-距离图自动估算 DBSCAN `eps` 参数的能力。
+    - **算法回退逻辑**: 针对月牙数据集等复杂流形，系统实现了从 DBSCAN 到 HDBSCAN 的自动探测与退避。
+    - **工程加固**: 实现了“显式导入约束”和“沙箱代码洗净”机制，彻底解决了 `SyntaxError` 和 `NameError` 等初级生成错误。
 
 ### 第二阶段：交互式创新 (Mid-term - WIP)
 - **[TODO] Human-in-the-Loop**: 允许用户对聚类结果进行在线标记，Agent 通过约束聚类 (Constrained Clustering) 实时微调算法权重。

@@ -67,7 +67,8 @@ class BaseExpert(ABC):
         logs = [f"[{self.label}] 开始分析数据特征并生成代码..."]
 
         # 1. Initial code generation
-        code = self._generate_code(client, dataset, prompt)
+        raw_code = self._generate_code(client, dataset, prompt)
+        code = _strip_code_fences(raw_code)
 
         # 2. Attempt to run + fix (up to MAX_RETRIES times)
         for attempt in range(1, self.MAX_RETRIES + 1):
