@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -177,10 +178,8 @@ class ACESupervisor:
         )
 
         # 自动生成 LaTeX（静默失败，不阻塞 UI；CODE_EXAMPLE 类型会在生成器内跳过）
-        try:
+        with contextlib.suppress(Exception):
             report.latex_path = LatexReportGenerator().generate(report)
-        except Exception:
-            pass
 
         self.last_report = report
         self.memory.append({"role": "user", "content": prompt})

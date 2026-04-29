@@ -115,7 +115,7 @@ class AlgorithmZoo:
             f"""
             {import_stmt}
             from sklearn.preprocessing import StandardScaler
-            
+
             scaled = StandardScaler().fit_transform(X)
             model = {class_name}({params_str})
             # Handle fit/predict differences
@@ -123,7 +123,7 @@ class AlgorithmZoo:
                 labels = model.fit_predict(scaled)
             else:
                 labels = model.fit(scaled).predict(scaled)
-            
+
             metrics = evaluate_labels(X, y, labels)
             plot_path = save_cluster_plot(X, labels, output_path, "{display_name or algo_name}")
             result = {{

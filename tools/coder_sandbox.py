@@ -247,10 +247,7 @@ def _looks_like_artifacts(v: Any) -> bool:
     """
     if not isinstance(v, dict) or not v:
         return False
-    for sub in v.values():
-        if isinstance(sub, dict) and "labels" in sub:
-            return True
-    return False
+    return any(isinstance(sub, dict) and "labels" in sub for sub in v.values())
 
 
 # ---------------------------------------------------------------------------

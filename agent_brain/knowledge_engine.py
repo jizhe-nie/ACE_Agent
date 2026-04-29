@@ -1,18 +1,17 @@
+import json
 import logging
 import os
+from pathlib import Path
+
+import chromadb
+from chromadb.utils import embedding_functions
+from loguru import logger
 
 # 强制禁言 transformers 和 chromadb 的底层日志
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["HF_HUB_OFFLINE"] = "1"
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("chromadb").setLevel(logging.ERROR)
-
-import json
-from pathlib import Path
-
-import chromadb
-from chromadb.utils import embedding_functions
-from loguru import logger
 
 
 class KnowledgeEngine:
@@ -45,9 +44,8 @@ class KnowledgeEngine:
 
         new_files = []
         for file_path in docs_path.glob("*.*"):
-            if file_path.suffix.lower() in [".txt", ".md", ".pdf"]:
-                if file_path.name not in self.ingested_files:
-                    new_files.append(file_path)
+            if file_path.suffix.lower() in [".txt", ".md", ".pdf"] and file_path.name not in self.ingested_files:
+                new_files.append(file_path)
 
         if not new_files:
             return

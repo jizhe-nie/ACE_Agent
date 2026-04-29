@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,9 +114,6 @@ class SessionManager:
         self.path.write_text(
             json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-
-
-from datetime import datetime
 
 
 def load_settings() -> dict:

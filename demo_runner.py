@@ -88,7 +88,7 @@ def _process_and_print(
 def _fmt(value):
     try:
         return f"{float(value):.3f}"
-    except:
+    except Exception:
         return "n/a"
 
 

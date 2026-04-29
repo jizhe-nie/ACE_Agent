@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -47,10 +48,8 @@ def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
 
     for col in df.columns:
         if df[col].dtype == object:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 df[col] = pd.to_numeric(df[col])
-            except (ValueError, TypeError):
-                pass
 
     target_col = None
     y = None
