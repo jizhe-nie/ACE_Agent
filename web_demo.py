@@ -473,6 +473,16 @@ def _handle_prompt(
     )
 
 
+def _safe_plot_path(path_obj) -> str | None:
+    """Return str(path) if it points to an existing file, otherwise None."""
+    if path_obj is None:
+        return None
+    p = Path(str(path_obj))
+    if p.name and p.exists() and p.is_file():
+        return str(p)
+    return None
+
+
 def _render_report(r) -> None:  # type: ignore[type-arg]
     ranking = r.ranking if hasattr(r, "ranking") else r["ranking"]
     dataset = r.dataset if hasattr(r, "dataset") else r["dataset"]
@@ -485,10 +495,16 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
     c[0].metric("优胜算法", algo_name)
     c[2].metric("评分", f"{score:.3f}")
     cols = st.columns(2)
-    raw_plot = r.dataset_plot_path if hasattr(r, "dataset_plot_path") else r["dataset_plot_path"]
-    top_plot = top.plot_path if hasattr(top, "plot_path") else top["plot_path"]
-    cols[0].image(str(raw_plot), caption="原始分布")
-    cols[1].image(str(top_plot), caption="最优聚类结果")
+    raw_plot = _safe_plot_path(r.dataset_plot_path if hasattr(r, "dataset_plot_path") else r["dataset_plot_path"])
+    if raw_plot:
+        cols[0].image(raw_plot, caption="原始分布")
+    else:
+        cols[0].warning("原始分布图不可用")
+    top_plot = _safe_plot_path(top.plot_path if hasattr(top, "plot_path") else top["plot_path"])
+    if top_plot:
+        cols[1].image(top_plot, caption="最优聚类结果")
+    else:
+        cols[1].info("该算法未生成聚类可视化图")
 
 
 if __name__ == "__main__":

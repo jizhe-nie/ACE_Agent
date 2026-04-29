@@ -578,18 +578,26 @@ from sklearn.metrics import (silhouette_score, davies_bouldin_score,
 from sklearn.model_selection import ShuffleSplit
 warnings.filterwarnings('ignore')
 
+# Simulated winner context (LLM hardcodes this from audit target)
+WINNER = {
+    "algorithm_name": "KMeans",
+    "expert_label": "centroid",
+    "metrics": {"score": 0.75, "silhouette": 0.65},
+    "n_labels": 3,
+}
+
 X_scaled = StandardScaler().fit_transform(X)
 n = len(X_scaled)
 
-# Hopkins
+# Hopkins statistic
 n_sample = min(50, n // 10)
 nbrs = NearestNeighbors(n_neighbors=2).fit(X_scaled)
 rand_pts = np.random.uniform(X_scaled.min(axis=0), X_scaled.max(axis=0), size=(n_sample, X_scaled.shape[1]))
 d_real, _ = nbrs.kneighbors(X_scaled[np.random.choice(n, n_sample, replace=False)])
 d_rand, _ = nbrs.kneighbors(rand_pts)
 hopkins = np.sum(d_real) / (np.sum(d_real) + np.sum(d_rand))
-tendency = "strong" if hopkins > 0.7 else ("moderate" if hopkins > 0.5 else "weak")
 
+# CVI multi-k scan
 max_k = min(15, int(np.sqrt(n)))
 k_range = list(range(2, max_k + 1))
 sil_scores, dbi_scores, chi_scores = [], [], []
@@ -603,45 +611,64 @@ best_k_dbi = k_range[int(np.argmin(dbi_scores))]
 best_k_chi = k_range[int(np.argmax(chi_scores))]
 k_consensus = int(np.median([best_k_sil, best_k_dbi, best_k_chi]))
 
+# Bootstrap stability around winner's k
+winner_k = WINNER.get("n_labels", 3)
 rs = ShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
 aris = []
 for train_idx, _ in rs.split(X_scaled):
-    X_train = X_scaled[train_idx]
-    prev_labels = None
-    for k in range(2, 9):
-        labels = KMeans(n_clusters=k, random_state=42, n_init=10).fit_predict(X_train)
-        if prev_labels is not None:
-            aris.append(adjusted_rand_score(prev_labels[:len(labels)], labels))
-        prev_labels = labels
-stability = float(np.clip(np.mean(aris) if aris else 0.5, 0, 1))
+    sub_labels = KMeans(n_clusters=winner_k, random_state=42, n_init=10).fit_predict(X_scaled[train_idx])
+    full_labels = KMeans(n_clusters=winner_k, random_state=42, n_init=10).fit_predict(X_scaled)
+    ari_val = adjusted_rand_score(full_labels[train_idx], sub_labels)
+    aris.append(ari_val)
+stability = float(np.clip(np.median(aris) if aris else 0.5, 0, 1))
 
-if hopkins > 0.7 and stability > 0.7:
-    grade = "excellent"
-elif hopkins > 0.5 and stability > 0.5:
-    grade = "good"
-elif hopkins > 0.3:
-    grade = "fair"
+# Overfitting risk
+if hopkins < 0.5:
+    overfitting_risk = "high" if stability < 0.6 else "medium"
+elif stability < 0.5:
+    overfitting_risk = "high"
+elif stability < 0.75:
+    overfitting_risk = "medium"
 else:
-    grade = "poor"
+    overfitting_risk = "low"
 
-score = float(np.clip((hopkins + stability) / 2, 0, 1))
+# Winner k consistency check
+winner_k_consistent = abs(winner_k - k_consensus) <= 1
+
+# Endorsement decision
+if stability >= 0.75 and hopkins >= 0.6 and winner_k_consistent:
+    endorsement = "endorsed"
+elif stability >= 0.5:
+    endorsement = "qualified"
+else:
+    endorsement = "qualified_with_warning"
+
+confidence = float(np.clip((hopkins + stability) / 2, 0, 1))
+
+findings = [
+    f"Hopkins H={hopkins:.3f} (" + ("strong trend" if hopkins > 0.7 else "moderate") + ")",
+    f"Bootstrap stability={stability:.3f}",
+    f"Winner k={winner_k}, CVI consensus k={k_consensus}"
+    + (" (consistent)" if winner_k_consistent else " (MISMATCH!)"),
+    f"Overfitting risk: {overfitting_risk}",
+]
 
 artifacts['Critic_Audit'] = {
     'labels': [],
     'metrics': {
-        'score': score,
-        'score_source': 'critic_audit',
-        'hopkins': round(float(hopkins), 4),
-        'cluster_tendency': tendency,
+        'score': 0.0,
+        'score_source': 'audit',
+    },
+    'audit_report': {
+        'confidence_level': round(float(confidence), 4),
+        'overfitting_risk': overfitting_risk,
         'stability_score': round(float(stability), 4),
-        'best_k_silhouette': best_k_sil,
-        'best_k_dbi': best_k_dbi,
-        'best_k_chi': best_k_chi,
-        'k_consensus': k_consensus,
-        'audit_grade': grade,
+        'hopkins': round(float(hopkins), 4),
+        'winner_k_consistency': winner_k_consistent,
+        'endorsement': endorsement,
+        'findings': findings,
         'recommendation': 'centroid' if stability > 0.6 else 'topology',
     },
-    'plot_path': '',
 }
 """
 
@@ -686,13 +713,20 @@ class TestCriticExpert:
         assert result["success"] is True
         assert "Critic_Audit" in result["artifacts"]
         audit = result["artifacts"]["Critic_Audit"]
+        # metrics: score is fixed at 0 (audit does not compete)
         m = audit["metrics"]
-        assert m["hopkins"] > 0
-        assert m["stability_score"] > 0
-        assert m["k_consensus"] >= 2
-        assert m["audit_grade"] in ("excellent", "good", "fair", "poor")
-        assert m["recommendation"] in ("centroid", "topology", "hybrid")
-        assert m["score_source"] == "critic_audit"
+        assert m["score"] == 0.0
+        assert m["score_source"] == "audit"
+        # audit_report: the real output
+        ar = audit["audit_report"]
+        assert 0 < ar["hopkins"] < 1
+        assert 0 < ar["stability_score"] <= 1
+        assert 0 <= ar["confidence_level"] <= 1
+        assert ar["overfitting_risk"] in ("low", "medium", "high")
+        assert ar["endorsement"] in ("endorsed", "qualified", "qualified_with_warning")
+        assert isinstance(ar["winner_k_consistency"], bool)
+        assert len(ar["findings"]) >= 2
+        assert ar["recommendation"] in ("centroid", "topology", "hybrid")
 
     def test_critic_in_registry(self) -> None:
         from ACE_Agent.expert_sub_agents import build_expert_registry
