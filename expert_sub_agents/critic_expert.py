@@ -14,6 +14,7 @@ audit expert that generates code for:
 The expert remains LLM-dependent (REQUIRES_LLM = True) because code generation
 relies on the LLM's statistical reasoning to tailor the audit to the dataset.
 """
+
 from __future__ import annotations
 
 from ACE_Agent.agent_core.schemas import DatasetBundle
@@ -89,10 +90,7 @@ class CriticExpert(BaseExpert):
             "```\n\n"
             "只返回 Python 代码，不要有任何解释或 Markdown 包裹。"
         )
-        user_msg = (
-            f"对数据集 '{dataset.display_name}'（{dataset.X.shape[0]} 样本, "
-            f"{dataset.X.shape[1]} 特征"
-        )
+        user_msg = f"对数据集 '{dataset.display_name}'（{dataset.X.shape[0]} 样本, {dataset.X.shape[1]} 特征"
         if dataset.y is not None:
             user_msg += f", {len(set(dataset.y.ravel()))} 类标签可用"
         user_msg += "）进行完整聚类审计。"

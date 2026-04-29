@@ -6,6 +6,7 @@ Integration test for the FOLLOW_UP intent path.
 Requires a live LLM configuration. Set environment variables or use .ace_demo_config.json.
 When LLM is not configured, the test is skipped automatically.
 """
+
 from __future__ import annotations
 
 import os
@@ -75,9 +76,7 @@ def test_follow_up() -> None:
     print(f"intent: {report2.response_type}")
     print(f"answer: {report2.llm_summary}")
 
-    assert report2.response_type == "FOLLOW_UP", (
-        "Agent should recognise follow-up and skip algorithm re-run"
-    )
+    assert report2.response_type == "FOLLOW_UP", "Agent should recognise follow-up and skip algorithm re-run"
 
 
 if __name__ == "__main__":

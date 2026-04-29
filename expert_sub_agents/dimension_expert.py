@@ -9,8 +9,9 @@ and anti-patterns like ``artifacts = {}``), we now:
 
 1. Construct a **deterministic code skeleton** that handles imports,
    scaling, error-guards, and the artifacts-write contract.
-2. Ask the LLM to produce a **compact JSON decision document** (~500 chars)
-   that selects which pipelines to activate and with what hyper-parameters.
+2. Ask the LLM to produce a **compact JSON decision document** (~700 chars)
+   that selects which pipelines to activate and with what hyper-parameters,
+   including deep AE architecture topology.
 3. Inject that decision into the skeleton and return the merged code.
 
 The sandbox pre-injects ``StandardScaler``, ``PCA``, ``KMeans``,
@@ -22,6 +23,7 @@ An optional 5th pipeline (``ae_kmeans``) leverages a deterministic
 AutoEncoder from ``tools/ae_pipeline.py`` for high-dimensional data
 (``n_features > 32``).
 """
+
 from __future__ import annotations
 
 import json
@@ -35,7 +37,7 @@ from ACE_Agent.tools.llm_client import UniversalLLMClient
 # ---------------------------------------------------------------------------
 # Deterministic code skeleton template
 # ---------------------------------------------------------------------------
-_SKELETON = r'''# ===== ACE Dimension Expert Skeleton (Phase 3) =====
+_SKELETON = r"""# ===== ACE Dimension Expert Skeleton (Phase 3) =====
 # All sklearn types below are pre-injected by the sandbox.
 # Data lives in CTX_DATA (read-only); results go into artifacts (write-only).
 
@@ -179,14 +181,25 @@ _d5 = _DECISIONS.get("pipelines", {}).get("ae_kmeans", {})
 if _d5.get("active", True) and _AE_OK and _d > 32:
     _k5 = int(_d5.get("k", _k0))
     _latent5 = int(_d5.get("latent_dim", min(8, max(2, _d // 4))))
-    _epochs5 = int(_d5.get("epochs", 30))
+    _epochs5 = int(_d5.get("epochs", 100))
+    _hidden5 = _d5.get("hidden_dims", None)
+    _lr5 = float(_d5.get("learning_rate", 1e-3))
+    _drop5 = float(_d5.get("dropout", 0.2))
+    _patience5 = int(_d5.get("early_stopping_patience", 15))
+    _noise5 = float(_d5.get("noise_std", 0.15))
+    _cluster5 = str(_d5.get("cluster_method", "kmeans"))
     try:
-        _result5 = _ae_pipe(_X, k=_k5, latent_dim=_latent5, epochs=_epochs5)
+        _result5 = _ae_pipe(
+            _X, k=_k5, latent_dim=_latent5, epochs=_epochs5,
+            hidden_dims=_hidden5, learning_rate=_lr5,
+            dropout=_drop5, early_stopping_patience=_patience5,
+            noise_std=_noise5, cluster_method=_cluster5,
+        )
         artifacts["AE_KMeans"] = _result5
     except Exception as _e5:
         artifacts["AE_KMeans_error"] = {
             "labels": [], "metrics": {"score": 0.0, "error": str(_e5)}, "plot_path": ""}
-'''
+"""
 
 # ---------------------------------------------------------------------------
 # LLM decision prompt (constrained)
@@ -207,17 +220,39 @@ _DECISION_SYSTEM_PROMPT = (
     "- n_features > 32: 激活全部可用管线（含 ae_kmeans）\n"
     "- n_components 不宜超过 min(n_features, n_samples//2)\n"
     "- k (聚类数) 默认用 expected_clusters 值，不要猜测\n\n"
-    "## AE 深度管线调参指南（重要）\n"
-    "- AE 管线使用浅层 MLP AutoEncoder，需要充分训练才能收敛\n"
+    "## AE 深度管线调参指南（Phase 4 深度去噪架构）\n"
+    "- AE 管线使用**多层堆叠 Denoising AutoEncoder**：\n"
+    "  * 每层结构: Linear → BatchNorm1d → LeakyReLU(0.2) → Dropout\n"
+    "  * 训练时向输入注入高斯噪声（Denoising AE），验证时不加噪\n"
+    "  * Encoder 和 Decoder 对称\n"
+    "  * 自带 L2 正则化 (weight_decay=1e-4) + CosineAnnealingLR + Early Stopping\n"
+    "- **hidden_dims 选择** (核心调参项，决定网络深度与宽度):\n"
+    "  * n_features <= 32: [64, 32] 或 [32, 16]\n"
+    "  * 32 < n_features <= 64: [128, 64, 32]\n"
+    "  * 64 < n_features <= 128: [256, 128, 64, 32] 或 [128, 64, 32]\n"
+    "  * n_features > 128: [256, 128, 64, 32]\n"
+    "  * 原则：层数越多，非线性表达能力越强，但小数据集易过拟合\n"
+    "  * n_samples < 500 时减少层数（2 层），> 2000 时可加深（3-4 层）\n"
     "- **epochs 选择**: 根据 n_features 动态调整\n"
-    "  * 32 < n_features <= 64: epochs=50~80\n"
-    "  * 64 < n_features <= 128: epochs=80~150\n"
-    "  * n_features > 128: epochs=100~200\n"
-    "- **latent_dim 选择**: 瓶颈层维度，通常为 n_features 的 1/8 ~ 1/4\n"
+    "  * 32 < n_features <= 64: epochs=80~150\n"
+    "  * 64 < n_features <= 128: epochs=100~200\n"
+    "  * n_features > 128: epochs=150~300\n"
+    "  * Early Stopping 会在验证损失不再下降时自动终止\n"
+    "- **learning_rate 选择**: Adam 初始学习率\n"
+    "  * 默认 1e-3，深度网络（≥3层）建议降至 5e-4\n"
+    "  * 小数据集（n_samples < 500）建议降至 5e-4 以提高稳定性\n"
+    "- **latent_dim 选择**: 瓶颈层维度，通常为 n_features 的 1/4 ~ 1/6\n"
     "  * 若数据类内方差大，适当增大 latent_dim (接近 n_features//4)\n"
-    "  * 若需要强压缩，缩小 latent_dim (接近 n_features//8)\n"
-    "- **batch_size**: 代码默认 64，n_samples < 200 时自动缩小\n"
-    "- 当前得分偏低通常意味着欠拟合 —— 优先加大 epochs，其次调整 latent_dim\n\n"
+    "  * 若需要强压缩，缩小 latent_dim (接近 n_features//6)\n"
+    "- **dropout**: 默认 0.2，小数据集可增至 0.3~0.4 防过拟合\n"
+    "- **early_stopping_patience**: 默认 15，小数据集可降至 10\n"
+    "- **noise_std**: Denoising AE 噪声标准差，默认 0.15\n"
+    "  * 小数据集（n_samples < 500）可增至 0.3~0.5 增强正则化（强去噪）\n"
+    "  * 大数据集可降至 0.05~0.15\n"
+    '- **cluster_method**: 潜在空间聚类方法 "kmeans" 或 "gmm"\n'
+    "  * GMM 能捕获非球形簇，多数情况下优于 KMeans\n"
+    "  * 小数据集或简单聚类结构用 kmeans\n"
+    "  * 默认推荐 gmm\n\n"
     "## JSON 格式\n"
     "{\n"
     '  "pipelines": {\n'
@@ -225,7 +260,10 @@ _DECISION_SYSTEM_PROMPT = (
     '    "pca_gmm":     {"active": true, "n_components": <int>, "k": <int>},\n'
     '    "umap_kmeans": {"active": true, "n_components": 2, "n_neighbors": <int>, "k": <int>},\n'
     '    "tsne_kmeans": {"active": true, "k": <int>},\n'
-    '    "ae_kmeans":   {"active": true, "latent_dim": <int>, "epochs": <int>, "k": <int>}\n'
+    '    "ae_kmeans":   {"active": true, "latent_dim": <int>, "epochs": <int>, "k": <int>,\n'
+    '                    "hidden_dims": [<int>, ...], "learning_rate": <float>,\n'
+    '                    "dropout": <float>, "early_stopping_patience": <int>,\n'
+    '                    "noise_std": <float>, "cluster_method": "gmm"}\n'
     "  }\n"
     "}\n\n"
     "只输出 JSON。"
@@ -241,7 +279,7 @@ def _extract_json(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
     # Strip ```json fences
-    m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', stripped)
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", stripped)
     if m:
         try:
             return json.loads(m.group(1))
@@ -252,7 +290,7 @@ def _extract_json(text: str) -> dict[str, Any]:
     end = stripped.rfind("}")
     if start >= 0 and end > start:
         try:
-            return json.loads(stripped[start:end + 1])
+            return json.loads(stripped[start : end + 1])
         except json.JSONDecodeError:
             pass
     # Return empty → skeleton uses all defaults
@@ -262,28 +300,66 @@ def _extract_json(text: str) -> dict[str, Any]:
 def _build_smart_defaults(n_features: int, n_samples: int, k: int) -> dict[str, Any]:
     """Build sensible defaults when LLM decision fails.
 
-    AE hyper-parameters scale with dimensionality to avoid under-fitting:
-    - 32 < d <= 64:  epochs=60
-    - 64 < d <= 128: epochs=100
-    - d > 128:       epochs=150
+    AE hyper-parameters scale with dimensionality and dataset size:
+    - Deeper / wider networks for high-dim data
+    - Shallower networks + higher dropout for small samples
+    - Lower learning rate for deep networks or small datasets
     """
     n_comp = min(n_features, max(2, n_features // 3), n_samples // 2)
     latent_dim = min(12, max(2, n_features // 4))
+
+    # ---- AE architecture defaults ---------------------------------------
+    small_dataset = n_samples < 500
+    tiny_dataset = n_samples < 200
+
     if n_features > 128:
-        ae_epochs = 150
+        hidden_dims = [256, 128, 64, 32] if not tiny_dataset else [128, 64]
+        ae_epochs = 200
+        ae_lr = 5e-4
+        ae_dropout = 0.3 if small_dataset else 0.2
     elif n_features > 64:
-        ae_epochs = 100
+        hidden_dims = [128, 64, 32] if not tiny_dataset else [64, 32]
+        ae_epochs = 120
+        ae_lr = 5e-4 if small_dataset else 1e-3
+        ae_dropout = 0.3 if small_dataset else 0.2
     elif n_features > 32:
-        ae_epochs = 60
+        hidden_dims = [128, 64, 32] if not small_dataset else [64, 32]
+        ae_epochs = 80
+        ae_lr = 5e-4 if small_dataset else 1e-3
+        ae_dropout = 0.3 if small_dataset else 0.2
     else:
+        hidden_dims = [64, 32]
         ae_epochs = 30
+        ae_lr = 1e-3
+        ae_dropout = 0.2
+
+    ae_patience = 10 if small_dataset else 15
+    ae_noise = 0.35 if small_dataset else 0.15
+    ae_cluster = "gmm"
+
     return {
         "pipelines": {
-            "pca_kmeans":  {"active": True, "n_components": n_comp, "k": k},
-            "pca_gmm":     {"active": True, "n_components": n_comp, "k": k},
-            "umap_kmeans": {"active": True, "n_components": min(2, n_features), "n_neighbors": min(15, n_samples - 1), "k": k},
+            "pca_kmeans": {"active": True, "n_components": n_comp, "k": k},
+            "pca_gmm": {"active": True, "n_components": n_comp, "k": k},
+            "umap_kmeans": {
+                "active": True,
+                "n_components": min(2, n_features),
+                "n_neighbors": min(15, n_samples - 1),
+                "k": k,
+            },
             "tsne_kmeans": {"active": n_samples <= 5000, "k": k},
-            "ae_kmeans":   {"active": n_features > 32, "latent_dim": latent_dim, "epochs": ae_epochs, "k": k},
+            "ae_kmeans": {
+                "active": n_features > 32,
+                "latent_dim": latent_dim,
+                "epochs": ae_epochs,
+                "k": k,
+                "hidden_dims": hidden_dims,
+                "learning_rate": ae_lr,
+                "dropout": ae_dropout,
+                "early_stopping_patience": ae_patience,
+                "noise_std": ae_noise,
+                "cluster_method": ae_cluster,
+            },
         }
     }
 
@@ -305,6 +381,7 @@ class DimensionExpert(BaseExpert):
         # Deferred import so this module can be loaded without torch.
         try:
             from ACE_Agent.tools.ae_pipeline import ae_kmeans_pipeline  # noqa: F811
+
             self.PRE_INJECT = {"ae_kmeans_pipeline": ae_kmeans_pipeline}
         except Exception:
             self.PRE_INJECT = {}
@@ -320,15 +397,26 @@ class DimensionExpert(BaseExpert):
         k = dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3
 
         # 1. Call LLM for pipeline decisions (JSON output)
+        small_ds = n_samples < 500
+        tiny_ds = n_samples < 200
         if n_features > 128:
             dim_category = "超高维"
-            ae_hint = "n_features>128，建议 epochs=120~200, latent_dim=n_features//6~n_features//4"
+            ae_hint = (
+                ("hidden_dims=[256,128,64,32]" if not tiny_ds else "hidden_dims=[128,64]")
+                + f", epochs=150~300, lr=5e-4, dropout={'0.3' if small_ds else '0.2'}, noise_std={'0.35' if small_ds else '0.15'}, cluster=gmm"
+            )
         elif n_features > 64:
             dim_category = "高维"
-            ae_hint = "64<n_features<=128，建议 epochs=80~150, latent_dim=n_features//6~n_features//4"
+            ae_hint = (
+                ("hidden_dims=[128,64,32]" if not tiny_ds else "hidden_dims=[64,32]")
+                + f", epochs=100~200, lr={'5e-4' if small_ds else '1e-3'}, dropout={'0.3' if small_ds else '0.2'}, noise_std={'0.35' if small_ds else '0.15'}, cluster=gmm"
+            )
         elif n_features > 32:
             dim_category = "中高维"
-            ae_hint = "32<n_features<=64，建议 epochs=50~80, latent_dim=n_features//6~n_features//4"
+            ae_hint = (
+                ("hidden_dims=[128,64,32]" if not small_ds else "hidden_dims=[64,32]")
+                + f", epochs=80~150, lr={'5e-4' if small_ds else '1e-3'}, dropout={'0.3' if small_ds else '0.2'}, noise_std={'0.35' if small_ds else '0.15'}, cluster=gmm"
+            )
         else:
             dim_category = "常规"
             ae_hint = "n_features<=32，AE 管线不会激活"
@@ -336,7 +424,7 @@ class DimensionExpert(BaseExpert):
             f"n_samples={n_samples}, n_features={n_features}, expected_clusters={k}。"
             f"数据维度类别: {dim_category}。"
             f"AE调参提示: {ae_hint}。"
-            f"请输出管线决策 JSON。"
+            f"请输出管线决策 JSON（含 hidden_dims, learning_rate, dropout, noise_std, cluster_method, early_stopping_patience）。"
         )
         raw = client.chat_completion(
             [{"role": "user", "content": user_msg}],
@@ -350,9 +438,5 @@ class DimensionExpert(BaseExpert):
 
         # 3. Inject decision JSON into skeleton (convert JSON bool/null to Python)
         decisions_repr = json.dumps(decisions, ensure_ascii=False)
-        decisions_repr = (
-            decisions_repr.replace("true", "True")
-            .replace("false", "False")
-            .replace("null", "None")
-        )
+        decisions_repr = decisions_repr.replace("true", "True").replace("false", "False").replace("null", "None")
         return _SKELETON.replace("{DECISIONS_JSON}", decisions_repr)

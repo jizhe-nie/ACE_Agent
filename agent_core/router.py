@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 import json
-from typing import Any, Dict, List
-from ACE_Agent.tools.llm_client import UniversalLLMClient, LLMSettings
+from typing import Any
+
+from ACE_Agent.tools.llm_client import LLMSettings, UniversalLLMClient
+
 
 class MasterRouter:
     """智能路由：负责意图识别与初步任务画像。
@@ -15,7 +18,7 @@ class MasterRouter:
     避免误触发昂贵的新任务流程。
     """
 
-    def analyze_intent(self, prompt: str, history: List[Any], settings: LLMSettings) -> Dict[str, Any]:
+    def analyze_intent(self, prompt: str, history: list[Any], settings: LLMSettings) -> dict[str, Any]:
         """使用 LLM 识别意图。强制要求返回 JSON。"""
         if not settings.is_configured:
             return {"intent": "NEW_TASK", "reasoning": "LLM 未配置，默认开启新任务"}
@@ -56,8 +59,8 @@ class MasterRouter:
             "- 提到算法名 + 要**代码/示例/怎么写** → CODE_EXAMPLE\n"
             "- 只是提问/追问 → FOLLOW_UP\n"
             "- 不确定时：优先判为 FOLLOW_UP（而非 NEW_TASK），以避免误触发实验。\n\n"
-            "输出格式必须为 JSON: {\"intent\": \"NEW_TASK|FOLLOW_UP|CODE_EXAMPLE\", "
-            "\"target_dataset\": \"...\", \"reasoning\": \"...\"}"
+            '输出格式必须为 JSON: {"intent": "NEW_TASK|FOLLOW_UP|CODE_EXAMPLE", '
+            '"target_dataset": "...", "reasoning": "..."}'
         )
 
         user_input = f"对话历史：\n{history_context}\n\n当前输入：{prompt}"
@@ -65,7 +68,8 @@ class MasterRouter:
 
         try:
             import re
-            json_match = re.search(r'\{.*\}', res.replace('\n', ''), re.DOTALL)
+
+            json_match = re.search(r"\{.*\}", res.replace("\n", ""), re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
                 # 强制转大写，防止大小写不匹配导致的逻辑失效

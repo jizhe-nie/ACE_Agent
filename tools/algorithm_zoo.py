@@ -1,86 +1,87 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
 import textwrap
+from typing import Any
+
 
 class AlgorithmZoo:
     @staticmethod
-    def get_all_algorithms() -> List[Dict[str, Any]]:
+    def get_all_algorithms() -> list[dict[str, Any]]:
         return [
             {
                 "name": "KMeans",
                 "library": "sklearn",
                 "category": "centroid",
                 "params": {"n_clusters": "expected_clusters", "random_state": 42},
-                "doc": "Classic centroid-based clustering."
+                "doc": "Classic centroid-based clustering.",
             },
             {
                 "name": "GaussianMixture",
                 "library": "sklearn",
                 "category": "centroid",
                 "params": {"n_components": "expected_clusters", "random_state": 42},
-                "doc": "Probabilistic model assuming Gaussian distributions."
+                "doc": "Probabilistic model assuming Gaussian distributions.",
             },
             {
                 "name": "DBSCAN",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {"eps": 0.5, "min_samples": 5},
-                "doc": "Density-based spatial clustering."
+                "doc": "Density-based spatial clustering.",
             },
             {
                 "name": "HDBSCAN",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {"min_cluster_size": 5},
-                "doc": "Hierarchical DBSCAN."
+                "doc": "Hierarchical DBSCAN.",
             },
             {
                 "name": "AgglomerativeClustering",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {"n_clusters": "expected_clusters"},
-                "doc": "Hierarchical clustering with a bottom-up approach."
+                "doc": "Hierarchical clustering with a bottom-up approach.",
             },
             {
                 "name": "SpectralClustering",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {"n_clusters": "expected_clusters", "random_state": 42, "affinity": "nearest_neighbors"},
-                "doc": "Clustering based on graph Laplacian eigenvalues."
+                "doc": "Clustering based on graph Laplacian eigenvalues.",
             },
             {
                 "name": "OPTICS",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {"min_samples": 5},
-                "doc": "Ordering Points To Identify the Clustering Structure."
+                "doc": "Ordering Points To Identify the Clustering Structure.",
             },
             {
                 "name": "Birch",
                 "library": "sklearn",
                 "category": "centroid",
                 "params": {"n_clusters": "expected_clusters"},
-                "doc": "Balanced Iterative Reducing and Clustering using Hierarchies."
+                "doc": "Balanced Iterative Reducing and Clustering using Hierarchies.",
             },
             {
                 "name": "AffinityPropagation",
                 "library": "sklearn",
                 "category": "centroid",
                 "params": {"random_state": 42},
-                "doc": "Clustering based on message passing between data points."
+                "doc": "Clustering based on message passing between data points.",
             },
             {
                 "name": "MeanShift",
                 "library": "sklearn",
                 "category": "topology",
                 "params": {},
-                "doc": "Centroid-based algorithm that seeks modes of density."
-            }
+                "doc": "Centroid-based algorithm that seeks modes of density.",
+            },
         ]
 
     @staticmethod
-    def get_algorithm_code(algo_name: str, params: Dict[str, Any], display_name: str = "") -> str:
+    def get_algorithm_code(algo_name: str, params: dict[str, Any], display_name: str = "") -> str:
         """
         生成该算法的执行代码片段。
         """

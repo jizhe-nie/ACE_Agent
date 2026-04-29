@@ -1,16 +1,18 @@
 """Clustering quality metrics and self-healing statistics."""
+
 from __future__ import annotations
 
 import math
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from sklearn.metrics import (
     adjusted_rand_score,
-    silhouette_score,
     calinski_harabasz_score,
     davies_bouldin_score,
+    silhouette_score,
 )
 
 
@@ -49,16 +51,26 @@ class ClusteringMetricsCalculator:
             }
         return {
             "ari": ClusteringMetricsCalculator._safe_metric(
-                adjusted_rand_score, y_true, labels,
-            ) if y_true is not None else float("nan"),
+                adjusted_rand_score,
+                y_true,
+                labels,
+            )
+            if y_true is not None
+            else float("nan"),
             "silhouette": ClusteringMetricsCalculator._safe_metric(
-                silhouette_score, X, labels,
+                silhouette_score,
+                X,
+                labels,
             ),
             "calinski_harabasz": ClusteringMetricsCalculator._safe_metric(
-                calinski_harabasz_score, X, labels,
+                calinski_harabasz_score,
+                X,
+                labels,
             ),
             "davies_bouldin": ClusteringMetricsCalculator._safe_metric(
-                davies_bouldin_score, X, labels,
+                davies_bouldin_score,
+                X,
+                labels,
             ),
         }
 

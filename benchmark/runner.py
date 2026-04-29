@@ -1,8 +1,8 @@
 """Benchmark runner: orchestrates experts across datasets and collects metrics."""
+
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -98,7 +98,10 @@ class BenchmarkRunner:
                     continue
                 try:
                     results = self._run_expert_on_dataset(
-                        expert_key, expert, dataset, prompt,
+                        expert_key,
+                        expert,
+                        dataset,
+                        prompt,
                     )
                     self._results.extend(results)
                 except Exception as exc:
@@ -147,7 +150,9 @@ class BenchmarkRunner:
 
         t0 = time.monotonic()
         algo_results: list[AlgorithmRunResult] = expert.execute_with_self_correction(
-            dataset, prompt, settings,
+            dataset,
+            prompt,
+            settings,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -158,36 +163,42 @@ class BenchmarkRunner:
         results: list[BenchmarkRunResult] = []
         for ar in algo_results:
             ext_metrics = ClusteringMetricsCalculator.compute_all(
-                dataset.X, ar.labels, dataset.y,
+                dataset.X,
+                ar.labels,
+                dataset.y,
             )
-            results.append(BenchmarkRunResult(
-                dataset=dataset.name,
-                expert_key=expert_key,
-                algorithm=ar.algorithm_name,
-                ari=ext_metrics["ari"],
-                silhouette=ext_metrics["silhouette"],
-                calinski_harabasz=ext_metrics["calinski_harabasz"],
-                davies_bouldin=ext_metrics["davies_bouldin"],
-                score=float(ar.metrics.get("score", 0.0)),
-                score_source=str(ar.metrics.get("score_source", "")),
-                retries_used=heal_stats["attempts"],
-                execution_time_ms=elapsed_ms,
-                tokens_prompt=cost_delta.get("prompt_tokens", 0),
-                tokens_completion=cost_delta.get("completion_tokens", 0),
-                estimated_cost_usd=cost_delta.get("cost_usd", 0.0),
-                success=True,
-            ))
+            results.append(
+                BenchmarkRunResult(
+                    dataset=dataset.name,
+                    expert_key=expert_key,
+                    algorithm=ar.algorithm_name,
+                    ari=ext_metrics["ari"],
+                    silhouette=ext_metrics["silhouette"],
+                    calinski_harabasz=ext_metrics["calinski_harabasz"],
+                    davies_bouldin=ext_metrics["davies_bouldin"],
+                    score=float(ar.metrics.get("score", 0.0)),
+                    score_source=str(ar.metrics.get("score_source", "")),
+                    retries_used=heal_stats["attempts"],
+                    execution_time_ms=elapsed_ms,
+                    tokens_prompt=cost_delta.get("prompt_tokens", 0),
+                    tokens_completion=cost_delta.get("completion_tokens", 0),
+                    estimated_cost_usd=cost_delta.get("cost_usd", 0.0),
+                    success=True,
+                )
+            )
 
         if not algo_results and heal_stats.get("error"):
-            results.append(BenchmarkRunResult(
-                dataset=dataset.name,
-                expert_key=expert_key,
-                algorithm="(all_failed)",
-                success=False,
-                error_message=heal_stats["error"],
-                execution_time_ms=elapsed_ms,
-                retries_used=heal_stats["attempts"],
-            ))
+            results.append(
+                BenchmarkRunResult(
+                    dataset=dataset.name,
+                    expert_key=expert_key,
+                    algorithm="(all_failed)",
+                    success=False,
+                    error_message=heal_stats["error"],
+                    execution_time_ms=elapsed_ms,
+                    retries_used=heal_stats["attempts"],
+                )
+            )
 
         return results
 
@@ -209,7 +220,7 @@ class BenchmarkRunner:
         completion_tokens = 0
         cost_usd = 0.0
         try:
-            with open(trace_path, "r", encoding="utf-8") as fh:
+            with open(trace_path, encoding="utf-8") as fh:
                 if start_byte > 0:
                     fh.seek(start_byte)
                 for line in fh:
@@ -261,17 +272,20 @@ class BenchmarkRunner:
         per_expert: dict[str, dict[str, Any]] = {}
 
         for r in self._results:
-            ds = per_dataset.setdefault(r.dataset, {
-                "algorithms_run": 0,
-                "successful": 0,
-                "total_score": 0.0,
-                "total_ari": 0.0,
-                "ari_count": 0,
-                "total_silhouette": 0.0,
-                "silhouette_count": 0,
-                "total_time_ms": 0,
-                "total_cost_usd": 0.0,
-            })
+            ds = per_dataset.setdefault(
+                r.dataset,
+                {
+                    "algorithms_run": 0,
+                    "successful": 0,
+                    "total_score": 0.0,
+                    "total_ari": 0.0,
+                    "ari_count": 0,
+                    "total_silhouette": 0.0,
+                    "silhouette_count": 0,
+                    "total_time_ms": 0,
+                    "total_cost_usd": 0.0,
+                },
+            )
             ds["algorithms_run"] += 1
             if r.success:
                 ds["successful"] += 1
@@ -285,14 +299,17 @@ class BenchmarkRunner:
             ds["total_time_ms"] += r.execution_time_ms
             ds["total_cost_usd"] += r.estimated_cost_usd
 
-            ex = per_expert.setdefault(r.expert_key, {
-                "algorithms_run": 0,
-                "successful": 0,
-                "total_score": 0.0,
-                "total_retries": 0,
-                "total_time_ms": 0,
-                "total_cost_usd": 0.0,
-            })
+            ex = per_expert.setdefault(
+                r.expert_key,
+                {
+                    "algorithms_run": 0,
+                    "successful": 0,
+                    "total_score": 0.0,
+                    "total_retries": 0,
+                    "total_time_ms": 0,
+                    "total_cost_usd": 0.0,
+                },
+            )
             ex["algorithms_run"] += 1
             if r.success:
                 ex["successful"] += 1
@@ -306,7 +323,11 @@ class BenchmarkRunner:
             n = max(ds["successful"], 1)
             ds["avg_score"] = round(ds["total_score"] / n, 4)
             ds["avg_ari"] = round(ds["total_ari"] / max(ds["ari_count"], 1), 4) if ds["ari_count"] > 0 else None
-            ds["avg_silhouette"] = round(ds["total_silhouette"] / max(ds["silhouette_count"], 1), 4) if ds["silhouette_count"] > 0 else None
+            ds["avg_silhouette"] = (
+                round(ds["total_silhouette"] / max(ds["silhouette_count"], 1), 4)
+                if ds["silhouette_count"] > 0
+                else None
+            )
             ds["success_rate"] = round(ds["successful"] / ds["algorithms_run"], 4) if ds["algorithms_run"] > 0 else 0.0
 
         for ex in per_expert.values():

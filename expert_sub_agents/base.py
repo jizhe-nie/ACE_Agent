@@ -7,6 +7,7 @@ Implements the Think-Act-Fix self-healing loop (up to 3 attempts).
 Passes `caller` and `attempt` metadata to the LLM client so that
 P0-3 trace records can distinguish initial calls from retries.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -29,9 +30,9 @@ def _strip_code_fences(text: str) -> str:
     stripped = text.strip()
     # Remove leading fence
     if stripped.startswith("```python"):
-        stripped = stripped[len("```python"):]
+        stripped = stripped[len("```python") :]
     elif stripped.startswith("```py"):
-        stripped = stripped[len("```py"):]
+        stripped = stripped[len("```py") :]
     elif stripped.startswith("```"):
         stripped = stripped[3:]
     # Remove trailing fence
@@ -207,8 +208,7 @@ class BaseExpert(ABC):
     ) -> str:
         """Generic code-fix logic using the LLM."""
         system_prompt = (
-            "你是一个 Python 调试专家。修正以下代码以解决给出的错误信息。"
-            "只返回修正后的 Python 代码，不要解释。"
+            "你是一个 Python 调试专家。修正以下代码以解决给出的错误信息。只返回修正后的 Python 代码，不要解释。"
         )
         user_input = f"原始代码：\n{old_code}\n\n错误信息：\n{error}"
         reply = client.chat_completion(

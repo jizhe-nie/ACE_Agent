@@ -19,6 +19,7 @@ Pre-injection (Phase 3):
   (CTX_DATA) carries X, y and metadata to eliminate ``NameError: data is
   not defined`` and similar variable-binding mistakes.
 """
+
 from __future__ import annotations
 
 import os
@@ -70,8 +71,7 @@ class DataContext:
     fails fast with a clear message.
     """
 
-    __slots__ = ("X", "y", "n_samples", "n_features", "expected_clusters",
-                 "has_labels", "display_name")
+    __slots__ = ("X", "y", "n_samples", "n_features", "expected_clusters", "has_labels", "display_name")
 
     def __init__(
         self,
@@ -90,8 +90,7 @@ class DataContext:
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise TypeError(
-            f"CTX_DATA is read-only.  Cannot set '{name}'."
-            f"  Use the skeleton variables or artifacts to store results."
+            f"CTX_DATA is read-only.  Cannot set '{name}'.  Use the skeleton variables or artifacts to store results."
         )
 
     def __repr__(self) -> str:
@@ -115,23 +114,27 @@ def _build_core_pre_inject() -> dict[str, Any]:
     # --- pre-processing ---
     try:
         from sklearn.preprocessing import StandardScaler  # noqa: F811
+
         modules["StandardScaler"] = StandardScaler
     except Exception:
         pass
     # --- decomposition ---
     try:
         from sklearn.decomposition import PCA  # noqa: F811
+
         modules["PCA"] = PCA
     except Exception:
         pass
     # --- clustering ---
     try:
         from sklearn.cluster import KMeans  # noqa: F811
+
         modules["KMeans"] = KMeans
     except Exception:
         pass
     try:
         from sklearn.mixture import GaussianMixture  # noqa: F811
+
         modules["GaussianMixture"] = GaussianMixture
     except Exception:
         pass
@@ -142,12 +145,14 @@ def _build_core_pre_inject() -> dict[str, Any]:
             calinski_harabasz_score,
             davies_bouldin_score,
         )
+
         modules["silhouette_score"] = silhouette_score
         modules["calinski_harabasz_score"] = calinski_harabasz_score
         modules["davies_bouldin_score"] = davies_bouldin_score
     except Exception:
         pass
     return modules
+
 
 CORE_PRE_INJECT: dict[str, Any] = _build_core_pre_inject()
 
@@ -372,7 +377,8 @@ class CoderSandbox:
             "artifacts": artifacts,
             "np": np,
             "CTX_DATA": DataContext(
-                X, y,
+                X,
+                y,
                 display_name=display_name,
                 expected_clusters=expected_clusters,
             ),

@@ -1,4 +1,5 @@
 """Benchmark reporter: JSON output, console summary, CI exit code."""
+
 from __future__ import annotations
 
 import json
@@ -64,10 +65,12 @@ class BenchmarkReporter:
         print(f"  Experts   : {', '.join(report.config.get('experts', []))}")
         print(f"  Mode      : {'offline' if report.config.get('offline_mode') else 'online'}")
         ov = report.summary.get("overall", {})
-        print(f"  Total runs: {ov.get('total_runs', 0)}  "
-              f"Success rate: {ov.get('success_rate', 0):.1%}  "
-              f"Cost: ${ov.get('total_cost_usd', 0):.4f}  "
-              f"Time: {ov.get('total_time_ms', 0) / 1000:.1f}s")
+        print(
+            f"  Total runs: {ov.get('total_runs', 0)}  "
+            f"Success rate: {ov.get('success_rate', 0):.1%}  "
+            f"Cost: ${ov.get('total_cost_usd', 0):.4f}  "
+            f"Time: {ov.get('total_time_ms', 0) / 1000:.1f}s"
+        )
         print("-" * 72)
 
         pd = report.summary.get("per_dataset", {})

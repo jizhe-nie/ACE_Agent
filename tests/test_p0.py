@@ -6,6 +6,7 @@ Phase 0 unit tests covering:
   - P0-4: CoderSandbox resource limits (timeout, memory watchdog, normal exec)
   - P0-5: LLMProvider abstraction (count_tokens, make_provider, fallback logic)
 """
+
 from __future__ import annotations
 
 import json
@@ -89,9 +90,7 @@ class TestMakeProvider:
         assert p.name == "DeepSeek"
 
     def test_provider_model_matches_settings(self) -> None:
-        s = LLMSettings(
-            provider="DeepSeek", base_url="https://x", api_key="k", model="deepseek-chat"
-        )
+        s = LLMSettings(provider="DeepSeek", base_url="https://x", api_key="k", model="deepseek-chat")
         p = make_provider(s)
         assert p.model == "deepseek-chat"
 
@@ -115,46 +114,38 @@ class TestUniversalLLMClientOffline:
         s = LLMSettings(enabled=False)
         return UniversalLLMClient(s, caller="test")
 
-    def test_unconfigured_returns_error_string(
-        self, unconfigured_client: UniversalLLMClient
-    ) -> None:
-        result = unconfigured_client.chat_completion(
-            [{"role": "user", "content": "hello"}]
-        )
+    def test_unconfigured_returns_error_string(self, unconfigured_client: UniversalLLMClient) -> None:
+        result = unconfigured_client.chat_completion([{"role": "user", "content": "hello"}])
         # Should return an error string, not crash
         assert result is not None
         assert "Error" in str(result) or result == ""
 
-    def test_get_cost_summary_initial_zero(
-        self, unconfigured_client: UniversalLLMClient
-    ) -> None:
+    def test_get_cost_summary_initial_zero(self, unconfigured_client: UniversalLLMClient) -> None:
         summary = unconfigured_client.get_cost_summary()
         assert summary["call_count"] == 0
         assert summary["total_prompt_tokens"] == 0
         assert summary["estimated_cost_usd"] == 0.0
 
-    def test_get_cost_summary_keys_present(
-        self, unconfigured_client: UniversalLLMClient
-    ) -> None:
+    def test_get_cost_summary_keys_present(self, unconfigured_client: UniversalLLMClient) -> None:
         summary = unconfigured_client.get_cost_summary()
         expected_keys = {
-            "call_count", "retry_count", "total_prompt_tokens",
-            "total_completion_tokens", "total_tokens", "estimated_cost_usd",
+            "call_count",
+            "retry_count",
+            "total_prompt_tokens",
+            "total_completion_tokens",
+            "total_tokens",
+            "estimated_cost_usd",
         }
         assert expected_keys.issubset(summary.keys())
 
-    def test_call_count_increments(
-        self, unconfigured_client: UniversalLLMClient, tmp_path: Path
-    ) -> None:
+    def test_call_count_increments(self, unconfigured_client: UniversalLLMClient, tmp_path: Path) -> None:
         """Each chat_completion call increments the counter even on error."""
         with patch("ACE_Agent.tools.llm_client._TRACE_PATH", tmp_path / "trace.jsonl"):
             unconfigured_client.chat_completion([{"role": "user", "content": "hi"}])
             unconfigured_client.chat_completion([{"role": "user", "content": "bye"}])
         assert unconfigured_client.get_cost_summary()["call_count"] == 2
 
-    def test_trace_written_to_file(
-        self, unconfigured_client: UniversalLLMClient, tmp_path: Path
-    ) -> None:
+    def test_trace_written_to_file(self, unconfigured_client: UniversalLLMClient, tmp_path: Path) -> None:
         trace_file = tmp_path / "trace.jsonl"
         with patch("ACE_Agent.tools.llm_client._TRACE_PATH", trace_file):
             unconfigured_client.chat_completion([{"role": "user", "content": "test"}])
@@ -168,9 +159,7 @@ class TestUniversalLLMClientOffline:
         assert "prompt_tokens" in record
         assert "latency_ms" in record
 
-    def test_retry_attempt_recorded(
-        self, unconfigured_client: UniversalLLMClient, tmp_path: Path
-    ) -> None:
+    def test_retry_attempt_recorded(self, unconfigured_client: UniversalLLMClient, tmp_path: Path) -> None:
         trace_file = tmp_path / "trace.jsonl"
         with patch("ACE_Agent.tools.llm_client._TRACE_PATH", trace_file):
             unconfigured_client.chat_completion(
@@ -217,9 +206,7 @@ class TestUniversalLLMClientOffline:
 
         # Check fallback event was logged
         lines = trace_file.read_text(encoding="utf-8").strip().splitlines()
-        fallback_events = [
-            json.loads(l) for l in lines if json.loads(l).get("event") == "provider_fallback"
-        ]
+        fallback_events = [json.loads(l) for l in lines if json.loads(l).get("event") == "provider_fallback"]
         assert len(fallback_events) == 1
         assert fallback_events[0]["from_provider"] == "DeepSeek"
         assert fallback_events[0]["to_provider"] == "DashScope"

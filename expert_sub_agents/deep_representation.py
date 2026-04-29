@@ -6,6 +6,7 @@ Deep Representation Expert: Specialized in deep clustering methods
 
 Integrated with the self-healing Think-Act-Fix loop (Phase 3 Prep).
 """
+
 from __future__ import annotations
 
 from ACE_Agent.agent_core.schemas import DatasetBundle
@@ -40,7 +41,7 @@ class DeepRepresentationExpert(BaseExpert):
             "5. 输出要求：结果必须写入 artifacts[algo_name]，包含 labels, metrics, plot_path。\n"
             "只返回 Python 代码，不要有任何解释。"
         )
-        user_input = f"为该数据集生成 PyTorch 深度聚类管线。"
+        user_input = "为该数据集生成 PyTorch 深度聚类管线。"
         return client.chat_completion(
             [{"role": "user", "content": user_input}],
             system_prompt,

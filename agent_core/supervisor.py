@@ -1,17 +1,23 @@
 from __future__ import annotations
-import numpy as np
+
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from ACE_Agent.agent_core.schemas import (
-    SupervisorReport, DatasetBundle, RoutingDecision,
-    AlgorithmRunResult, ProfileReport
-)
-from ACE_Agent.agent_core.router import MasterRouter
+from typing import Any
+
+import numpy as np
+
 from ACE_Agent.agent_brain.knowledge_engine import KnowledgeEngine
+from ACE_Agent.agent_core.router import MasterRouter
+from ACE_Agent.agent_core.schemas import (
+    AlgorithmRunResult,
+    DatasetBundle,
+    ProfileReport,
+    RoutingDecision,
+    SupervisorReport,
+)
 from ACE_Agent.expert_sub_agents import build_expert_registry
-from ACE_Agent.tools.llm_client import UniversalLLMClient, LLMSettings
 from ACE_Agent.tools.latex_generator import LatexReportGenerator
+from ACE_Agent.tools.llm_client import LLMSettings, UniversalLLMClient
 
 
 class ACESupervisor:
@@ -39,17 +45,17 @@ class ACESupervisor:
             print(f"知识库初始化警告: {e}")
 
         self.memory: list[dict[str, Any]] = []
-        self.last_report: Optional[SupervisorReport] = None
+        self.last_report: SupervisorReport | None = None
 
         # 完整专家注册表（含 zoo, critic, dimension, deep）
         self.experts: dict[str, Any] = build_expert_registry()
 
     def run(
         self,
-        dataset: Optional[DatasetBundle],
+        dataset: DatasetBundle | None,
         user_prompt: str,
         llm_settings: LLMSettings,
-        intent_data: Optional[Dict[str, Any]] = None,
+        intent_data: dict[str, Any] | None = None,
     ) -> SupervisorReport:
         """核心编排流程。"""
         # 1. 语义路由
@@ -102,8 +108,8 @@ class ACESupervisor:
         dataset: DatasetBundle,
         prompt: str,
         settings: LLMSettings,
-        trace: List[str],
-        active_experts: List[str],
+        trace: list[str],
+        active_experts: list[str],
     ) -> SupervisorReport:
         """执行完整的自动化聚类实验流。"""
         output_dir = self._prepare_output_dir(dataset.name)
@@ -133,31 +139,31 @@ class ACESupervisor:
             )
 
         # 排序与摘要
-        ranking = sorted(
-            all_results, key=lambda x: x.metrics.get("score", 0.0), reverse=True
-        )
+        ranking = sorted(all_results, key=lambda x: x.metrics.get("score", 0.0), reverse=True)
         client = UniversalLLMClient(settings)
         best = ranking[0]
-        summary = client.summarize_report({
-            "user_intent": prompt,
-            "dataset": dataset.display_name,
-            "best_algo": best.algorithm_name,
-            "metrics": best.metrics,
-            "score_source": best.metrics.get("score_source", "silhouette"),
-            "all_results": [
-                {"algo": r.algorithm_name,
-                 "score": r.metrics.get("score", 0.0),
-                 "score_source": r.metrics.get("score_source", "silhouette")}
-                for r in all_results
-            ],
-        })
+        summary = client.summarize_report(
+            {
+                "user_intent": prompt,
+                "dataset": dataset.display_name,
+                "best_algo": best.algorithm_name,
+                "metrics": best.metrics,
+                "score_source": best.metrics.get("score_source", "silhouette"),
+                "all_results": [
+                    {
+                        "algo": r.algorithm_name,
+                        "score": r.metrics.get("score", 0.0),
+                        "score_source": r.metrics.get("score_source", "silhouette"),
+                    }
+                    for r in all_results
+                ],
+            }
+        )
 
         report = SupervisorReport(
             dataset=dataset,
             routing=RoutingDecision(
-                profile=ProfileReport(
-                    dataset.X.shape[0], dataset.X.shape[1], 0, 0, 0, False, False, False
-                ),
+                profile=ProfileReport(dataset.X.shape[0], dataset.X.shape[1], 0, 0, 0, False, False, False),
                 selected_experts=[],
                 trace=trace,
             ),
@@ -185,9 +191,7 @@ class ACESupervisor:
     # FOLLOW_UP 路径
     # ------------------------------------------------------------------
 
-    def _handle_follow_up(
-        self, prompt: str, settings: LLMSettings, trace: List[str]
-    ) -> SupervisorReport:
+    def _handle_follow_up(self, prompt: str, settings: LLMSettings, trace: list[str]) -> SupervisorReport:
         """纯 LLM 驱动的追问或学术咨询处理。"""
         client = UniversalLLMClient(settings)
 
@@ -195,19 +199,14 @@ class ACESupervisor:
             context = {
                 "last_summary": self.last_report.executive_summary,
                 "ranking": [
-                    {"algo": r.algorithm_name, "score": r.metrics.get("score")}
-                    for r in self.last_report.ranking
+                    {"algo": r.algorithm_name, "score": r.metrics.get("score")} for r in self.last_report.ranking
                 ],
             }
-            system_msg = (
-                f"你是一个数据科学专家。请基于以下聚类背景及检索到的知识回答用户问题：\n{context}"
-            )
+            system_msg = f"你是一个数据科学专家。请基于以下聚类背景及检索到的知识回答用户问题：\n{context}"
         else:
             system_msg = "你是一个数据科学专家。请基于检索到的学术背景知识回答用户的理论咨询。"
 
-        res = client.chat_completion(
-            [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
-        )
+        res = client.chat_completion([{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}])
         trace.append("【主控】正在基于知识库与会话上下文进行深度解析...")
 
         report = SupervisorReport(
@@ -216,14 +215,8 @@ class ACESupervisor:
                 if self.last_report
                 else DatasetBundle("Consultation", np.array([[0, 0]]), None)
             ),
-            routing=(
-                self.last_report.routing
-                if self.last_report
-                else RoutingDecision(None, [], trace)
-            ),
-            dataset_plot_path=(
-                self.last_report.dataset_plot_path if self.last_report else Path("")
-            ),
+            routing=(self.last_report.routing if self.last_report else RoutingDecision(None, [], trace)),
+            dataset_plot_path=(self.last_report.dataset_plot_path if self.last_report else Path("")),
             output_dir=self.last_report.output_dir if self.last_report else Path(""),
             results=[],
             ranking=self.last_report.ranking if self.last_report else [],
@@ -237,9 +230,7 @@ class ACESupervisor:
     # CODE_EXAMPLE 路径（P0.5-C 新增）
     # ------------------------------------------------------------------
 
-    def _handle_code_example(
-        self, prompt: str, settings: LLMSettings, trace: List[str]
-    ) -> SupervisorReport:
+    def _handle_code_example(self, prompt: str, settings: LLMSettings, trace: list[str]) -> SupervisorReport:
         """处理 CODE_EXAMPLE 意图：用 LLM 生成自包含代码，不走沙箱，不生成图。
 
         返回 SupervisorReport(response_type="CODE_EXAMPLE")，
@@ -257,9 +248,7 @@ class ACESupervisor:
             "4. 用中文注释解释关键步骤。\n"
             "5. 只返回 Markdown 代码块，格式为 ```python ... ```，不要额外解释。"
         )
-        raw = client.chat_completion(
-            [{"role": "user", "content": prompt}], code_system
-        )
+        raw = client.chat_completion([{"role": "user", "content": prompt}], code_system)
         # 确保结果包裹在 markdown 代码块里
         if raw and "```" not in raw:
             code_md = f"```python\n{raw.strip()}\n```"
@@ -270,20 +259,12 @@ class ACESupervisor:
 
         # 复用上次报告的 dataset/routing/output_dir 字段，保持 UI 不崩溃
         placeholder_ds = (
-            self.last_report.dataset
-            if self.last_report
-            else DatasetBundle("code_example", np.array([[0, 0]]), None)
+            self.last_report.dataset if self.last_report else DatasetBundle("code_example", np.array([[0, 0]]), None)
         )
         report = SupervisorReport(
             dataset=placeholder_ds,
-            routing=(
-                self.last_report.routing
-                if self.last_report
-                else RoutingDecision(None, [], trace)
-            ),
-            dataset_plot_path=(
-                self.last_report.dataset_plot_path if self.last_report else Path("")
-            ),
+            routing=(self.last_report.routing if self.last_report else RoutingDecision(None, [], trace)),
+            dataset_plot_path=(self.last_report.dataset_plot_path if self.last_report else Path("")),
             output_dir=self.last_report.output_dir if self.last_report else Path(""),
             results=[],
             ranking=self.last_report.ranking if self.last_report else [],
@@ -305,6 +286,7 @@ class ACESupervisor:
 
     def _save_raw_plot(self, dataset: DatasetBundle, out_dir: Path) -> Path:
         import matplotlib.pyplot as plt
+
         path = out_dir / "raw_data.png"
         plt.figure(figsize=(6, 4))
         plt.scatter(dataset.X[:, 0], dataset.X[:, 1], c="gray", alpha=0.5, s=10)
@@ -316,8 +298,8 @@ class ACESupervisor:
     def _error_report(
         self,
         msg: str,
-        trace: List[str],
-        expert_logs: Optional[Dict[str, List[str]]] = None,
+        trace: list[str],
+        expert_logs: dict[str, list[str]] | None = None,
     ) -> SupervisorReport:
         """构造错误报告。
 

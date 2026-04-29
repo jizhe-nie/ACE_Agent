@@ -1,10 +1,11 @@
 """Tests for ACE Agent benchmark suite."""
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -13,7 +14,7 @@ _root_parent = str(Path(__file__).resolve().parents[2])
 if _root_parent not in sys.path:
     sys.path.insert(0, _root_parent)
 
-from sklearn.datasets import make_blobs, make_moons  # noqa: E402
+from sklearn.datasets import make_blobs  # noqa: E402
 
 from ACE_Agent.benchmark.config import BenchmarkConfig  # noqa: E402
 from ACE_Agent.benchmark.metrics import ClusteringMetricsCalculator  # noqa: E402
@@ -26,6 +27,7 @@ from ACE_Agent.tools.llm_client import LLMSettings  # noqa: E402
 # ======================================================================
 # ClusteringMetricsCalculator
 # ======================================================================
+
 
 class TestClusteringMetricsCalculator:
     """Tests for ClusteringMetricsCalculator."""
@@ -116,6 +118,7 @@ class TestSelfHealingStats:
 # BenchmarkConfig
 # ======================================================================
 
+
 class TestBenchmarkConfig:
     """Tests for BenchmarkConfig."""
 
@@ -145,6 +148,7 @@ class TestBenchmarkConfig:
 # ======================================================================
 # BenchmarkRunner (offline)
 # ======================================================================
+
 
 class TestBenchmarkRunnerOffline:
     """Offline benchmark tests using ZooExpert only (no LLM required)."""
@@ -178,8 +182,11 @@ class TestBenchmarkRunnerOffline:
     def test_resolve_experts_drops_centroid(self, tmp_path: Path) -> None:
         """Offline mode drops centroid (REQUIRES_LLM=True)."""
         c = BenchmarkConfig(
-            datasets=["blobs"], experts=["zoo", "centroid"],
-            n_samples=60, offline_mode=True, output_dir=str(tmp_path),
+            datasets=["blobs"],
+            experts=["zoo", "centroid"],
+            n_samples=60,
+            offline_mode=True,
+            output_dir=str(tmp_path),
         )
         runner = BenchmarkRunner(c)
         resolved = runner._resolve_experts()
@@ -274,6 +281,7 @@ class TestBenchmarkRunnerOffline:
 # BenchmarkReporter
 # ======================================================================
 
+
 def _make_sample_report() -> BenchmarkReport:
     return BenchmarkReport(
         benchmark_version="1.0",
@@ -281,28 +289,63 @@ def _make_sample_report() -> BenchmarkReport:
         config={"datasets": ["blobs", "moons"], "experts": ["zoo"], "offline_mode": True},
         results=[
             BenchmarkRunResult(
-                dataset="blobs", expert_key="zoo", algorithm="KMeans",
-                ari=0.95, silhouette=0.72, calinski_harabasz=120.0, davies_bouldin=0.45,
-                score=0.95, score_source="ari", success=True, execution_time_ms=1200,
+                dataset="blobs",
+                expert_key="zoo",
+                algorithm="KMeans",
+                ari=0.95,
+                silhouette=0.72,
+                calinski_harabasz=120.0,
+                davies_bouldin=0.45,
+                score=0.95,
+                score_source="ari",
+                success=True,
+                execution_time_ms=1200,
             ),
             BenchmarkRunResult(
-                dataset="blobs", expert_key="zoo", algorithm="DBSCAN",
-                ari=0.88, silhouette=0.65, calinski_harabasz=90.0, davies_bouldin=0.55,
-                score=0.88, score_source="ari", success=True, execution_time_ms=900,
+                dataset="blobs",
+                expert_key="zoo",
+                algorithm="DBSCAN",
+                ari=0.88,
+                silhouette=0.65,
+                calinski_harabasz=90.0,
+                davies_bouldin=0.55,
+                score=0.88,
+                score_source="ari",
+                success=True,
+                execution_time_ms=900,
             ),
             BenchmarkRunResult(
-                dataset="moons", expert_key="zoo", algorithm="DBSCAN",
-                ari=1.0, silhouette=0.30, calinski_harabasz=30.0, davies_bouldin=1.2,
-                score=1.0, score_source="ari", success=True, execution_time_ms=1100,
+                dataset="moons",
+                expert_key="zoo",
+                algorithm="DBSCAN",
+                ari=1.0,
+                silhouette=0.30,
+                calinski_harabasz=30.0,
+                davies_bouldin=1.2,
+                score=1.0,
+                score_source="ari",
+                success=True,
+                execution_time_ms=1100,
             ),
             BenchmarkRunResult(
-                dataset="moons", expert_key="zoo", algorithm="KMeans",
-                ari=0.45, silhouette=0.55, calinski_harabasz=80.0, davies_bouldin=0.60,
-                score=0.55, score_source="silhouette", success=True, execution_time_ms=800,
+                dataset="moons",
+                expert_key="zoo",
+                algorithm="KMeans",
+                ari=0.45,
+                silhouette=0.55,
+                calinski_harabasz=80.0,
+                davies_bouldin=0.60,
+                score=0.55,
+                score_source="silhouette",
+                success=True,
+                execution_time_ms=800,
             ),
             BenchmarkRunResult(
-                dataset="blobs", expert_key="zoo", algorithm="(all_failed)",
-                success=False, error_message="Sandbox timeout",
+                dataset="blobs",
+                expert_key="zoo",
+                algorithm="(all_failed)",
+                success=False,
+                error_message="Sandbox timeout",
             ),
         ],
         summary={},  # filled below
@@ -318,7 +361,7 @@ class TestBenchmarkReporter:
         path = tmp_path / "benchmark_test.json"
         BenchmarkReporter.write_json(report, str(path))
         assert path.exists()
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         assert data["benchmark_version"] == "1.0"
         assert data["timestamp"] == "2026-04-28T00:00:00Z"
@@ -330,7 +373,7 @@ class TestBenchmarkReporter:
         report = _make_sample_report()
         path = tmp_path / "benchmark_fields.json"
         BenchmarkReporter.write_json(report, str(path))
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         for r in data["results"]:
             for key in ["dataset", "expert_key", "algorithm", "success", "execution_time_ms"]:
@@ -377,6 +420,7 @@ class TestBenchmarkReporter:
 # BenchmarkReport aggregation
 # ======================================================================
 
+
 class TestBenchmarkReportAggregation:
     """Tests for _aggregate() logic."""
 
@@ -398,12 +442,29 @@ class TestBenchmarkReportAggregation:
         """Per-dataset metrics are correct."""
         runner = BenchmarkRunner(BenchmarkConfig(offline_mode=True))
         runner._results = [
-            BenchmarkRunResult(dataset="a", expert_key="z", algorithm="KMeans",
-                               score=0.8, ari=0.9, silhouette=0.7, success=True, execution_time_ms=1000),
-            BenchmarkRunResult(dataset="a", expert_key="z", algorithm="DBSCAN",
-                               score=0.6, ari=0.7, silhouette=0.5, success=True, execution_time_ms=2000),
-            BenchmarkRunResult(dataset="b", expert_key="z", algorithm="KMeans",
-                               score=0.5, success=True, execution_time_ms=500),
+            BenchmarkRunResult(
+                dataset="a",
+                expert_key="z",
+                algorithm="KMeans",
+                score=0.8,
+                ari=0.9,
+                silhouette=0.7,
+                success=True,
+                execution_time_ms=1000,
+            ),
+            BenchmarkRunResult(
+                dataset="a",
+                expert_key="z",
+                algorithm="DBSCAN",
+                score=0.6,
+                ari=0.7,
+                silhouette=0.5,
+                success=True,
+                execution_time_ms=2000,
+            ),
+            BenchmarkRunResult(
+                dataset="b", expert_key="z", algorithm="KMeans", score=0.5, success=True, execution_time_ms=500
+            ),
         ]
         summary = runner._aggregate()
         ds_a = summary["per_dataset"]["a"]
@@ -415,6 +476,7 @@ class TestBenchmarkReportAggregation:
 # ======================================================================
 # BenchmarkRunner with mocked LLM experts
 # ======================================================================
+
 
 class TestBenchmarkWithLLMExperts:
     """Tests with mocked LLM calls for centroid/topology experts."""
@@ -433,8 +495,11 @@ class TestBenchmarkWithLLMExperts:
     def test_centroid_dropped_in_offline(self, tmp_path: Path) -> None:
         """Offline mode drops centroid expert."""
         c = BenchmarkConfig(
-            datasets=["moons"], experts=["zoo", "centroid"],
-            n_samples=60, offline_mode=True, output_dir=str(tmp_path),
+            datasets=["moons"],
+            experts=["zoo", "centroid"],
+            n_samples=60,
+            offline_mode=True,
+            output_dir=str(tmp_path),
         )
         runner = BenchmarkRunner(c)
         resolved = runner._resolve_experts()
@@ -446,38 +511,54 @@ class TestBenchmarkWithLLMExperts:
 # __main__ CLI
 # ======================================================================
 
+
 class TestCLI:
     """Tests for CLI entry point."""
 
     def test_parse_offline_run(self, tmp_path: Path, monkeypatch) -> None:
         """CLI --offline --output tmp_path exits 0."""
         from ACE_Agent.benchmark.__main__ import main
+
         output = tmp_path / "cli_test.json"
         # Ensure trace path exists
         (tmp_path / "llm_trace.jsonl").touch()
-        rc = main([
-            "--offline",
-            "--datasets", "blobs",
-            "--experts", "zoo",
-            "--n-samples", "40",
-            "--output", str(output),
-        ])
+        rc = main(
+            [
+                "--offline",
+                "--datasets",
+                "blobs",
+                "--experts",
+                "zoo",
+                "--n-samples",
+                "40",
+                "--output",
+                str(output),
+            ]
+        )
         assert rc == 0
         assert output.exists()
 
     def test_invalid_dataset_exits(self, tmp_path: Path, monkeypatch) -> None:
         """CLI with invalid dataset exits gracefully."""
         from ACE_Agent.benchmark.__main__ import main
+
         output = tmp_path / "cli_invalid.json"
         (tmp_path / "llm_trace.jsonl").touch()
-        rc = main([
-            "--offline",
-            "--datasets", "xyz_invalid",
-            "--experts", "zoo",
-            "--n-samples", "20",
-            "--min-success-rate", "0.0",
-            "--output", str(output),
-        ])
+        rc = main(
+            [
+                "--offline",
+                "--datasets",
+                "xyz_invalid",
+                "--experts",
+                "zoo",
+                "--n-samples",
+                "20",
+                "--min-success-rate",
+                "0.0",
+                "--output",
+                str(output),
+            ]
+        )
         assert rc == 0
         assert output.exists()
 
@@ -571,10 +652,12 @@ class TestCriticExpert:
     @pytest.fixture()
     def critic_expert(self):
         from ACE_Agent.expert_sub_agents.critic_expert import CriticExpert
+
         return CriticExpert()
 
     def test_is_base_expert_subclass(self, critic_expert) -> None:
         from ACE_Agent.expert_sub_agents.base import BaseExpert
+
         assert isinstance(critic_expert, BaseExpert)
 
     def test_key_and_label(self, critic_expert) -> None:
@@ -594,6 +677,7 @@ class TestCriticExpert:
 
     def test_generated_code_is_syntactically_valid(self, critic_expert) -> None:
         import ast
+
         ast.parse(_VALID_AUDIT_CODE)
 
     def test_audit_code_executes_in_sandbox(self, critic_expert) -> None:
@@ -612,11 +696,12 @@ class TestCriticExpert:
 
     def test_critic_in_registry(self) -> None:
         from ACE_Agent.expert_sub_agents import build_expert_registry
+
         assert "critic" in build_expert_registry()
 
 
 # ======================================================================
-# DimensionExpert (Phase 3 — skeleton + LLM decision model)
+# DimensionExpert (Phase 3/4 — skeleton + LLM decision + deep AE)
 # ======================================================================
 
 _VALID_DIM_DECISION_JSON = """\
@@ -625,7 +710,10 @@ _VALID_DIM_DECISION_JSON = """\
     "pca_gmm":     {"active": true, "n_components": 10, "k": 3},
     "umap_kmeans": {"active": false, "n_components": 2, "n_neighbors": 15, "k": 3},
     "tsne_kmeans": {"active": false, "k": 3},
-    "ae_kmeans":   {"active": false, "latent_dim": 4, "epochs": 10, "k": 3}
+    "ae_kmeans":   {"active": false, "latent_dim": 4, "epochs": 10, "k": 3,
+                    "hidden_dims": [64, 32], "learning_rate": 0.001,
+                    "dropout": 0.2, "early_stopping_patience": 15,
+                    "noise_std": 0.15, "cluster_method": "gmm"}
 }}
 """
 
@@ -636,10 +724,12 @@ class TestDimensionExpert:
     @pytest.fixture()
     def dim_expert(self):
         from ACE_Agent.expert_sub_agents.dimension_expert import DimensionExpert
+
         return DimensionExpert()
 
     def test_is_base_expert_subclass(self, dim_expert) -> None:
         from ACE_Agent.expert_sub_agents.base import BaseExpert
+
         assert isinstance(dim_expert, BaseExpert)
 
     def test_key_and_label(self, dim_expert) -> None:
@@ -664,6 +754,7 @@ class TestDimensionExpert:
     def test_generated_code_is_syntactically_valid(self, dim_expert) -> None:
         """The skeleton + mock decision must parse as valid Python."""
         import ast
+
         mock_client = MagicMock()
         mock_client.chat_completion.return_value = _VALID_DIM_DECISION_JSON
         dataset = generate_dataset("high_dim", n_samples=60)
@@ -677,7 +768,9 @@ class TestDimensionExpert:
         dataset = generate_dataset("high_dim", n_samples=60)
         code = dim_expert._generate_code(mock_client, dataset, "test")
         result = dim_expert.sandbox.execute(
-            code, dataset.X, dataset.y,
+            code,
+            dataset.X,
+            dataset.y,
             pre_inject=dim_expert.PRE_INJECT or None,
             display_name=dataset.display_name,
             expected_clusters=3,
@@ -697,7 +790,9 @@ class TestDimensionExpert:
         dataset = generate_dataset("high_dim", n_samples=80)
         code = dim_expert._generate_code(mock_client, dataset, "test")
         result = dim_expert.sandbox.execute(
-            code, dataset.X, dataset.y,
+            code,
+            dataset.X,
+            dataset.y,
             pre_inject=dim_expert.PRE_INJECT or None,
             display_name=dataset.display_name,
             expected_clusters=3,
@@ -716,6 +811,7 @@ class TestDimensionExpert:
         assert "DECISIONS" in code
         # Code must be valid Python even with garbage LLM input
         import ast
+
         ast.parse(code)
 
     def test_ae_pipeline_pre_injected(self, dim_expert) -> None:
@@ -726,4 +822,5 @@ class TestDimensionExpert:
 
     def test_dimension_in_registry(self) -> None:
         from ACE_Agent.expert_sub_agents import build_expert_registry
+
         assert "dimension" in build_expert_registry()

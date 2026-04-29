@@ -19,6 +19,7 @@ string (each scenario triggers the soft-failure path because the
 canned code either never executes, or doesn't write to
 ``artifacts``).
 """
+
 from __future__ import annotations
 
 import sys
@@ -94,9 +95,7 @@ def _run_and_capture(initial_code: str) -> list[dict]:
         return initial_code
 
     expert = _StubExpert(initial_code)
-    with patch.object(
-        UniversalLLMClient, "chat_completion", autospec=True, side_effect=fake_chat_completion
-    ):
+    with patch.object(UniversalLLMClient, "chat_completion", autospec=True, side_effect=fake_chat_completion):
         expert.execute_with_self_correction(_dataset(), "stub prompt", _settings())
     return captured
 
@@ -121,30 +120,21 @@ def _fix_user_content(call_records: list[dict]) -> str:
 
 class TestSoftFailureDiagnosis:
     def test_main_guard_triggers_main_hint(self) -> None:
-        code = (
-            "if __name__ == '__main__':\n"
-            "    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
-        )
+        code = "if __name__ == '__main__':\n    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
         calls = _run_and_capture(code)
         content = _fix_user_content(calls)
         assert "__main__" in content
         assert "守卫" in content or "顶层" in content
 
     def test_def_main_triggers_function_hint(self) -> None:
-        code = (
-            "def main():\n"
-            "    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
-        )
+        code = "def main():\n    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
         calls = _run_and_capture(code)
         content = _fix_user_content(calls)
         assert "def main" in content or "def run" in content
         assert "顶层" in content
 
     def test_def_run_triggers_function_hint(self) -> None:
-        code = (
-            "def run():\n"
-            "    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
-        )
+        code = "def run():\n    artifacts['KMeans'] = {'labels': [0], 'metrics': {}, 'plot_path': ''}\n"
         calls = _run_and_capture(code)
         content = _fix_user_content(calls)
         assert "def main" in content or "def run" in content
@@ -167,12 +157,7 @@ class TestSoftFailureDiagnosis:
         assert "顶层直接调用" in combined or "请确保" in combined
 
     def test_both_patterns_both_hints(self) -> None:
-        code = (
-            "def main():\n"
-            "    pass\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
-        )
+        code = "def main():\n    pass\nif __name__ == '__main__':\n    main()\n"
         calls = _run_and_capture(code)
         content = _fix_user_content(calls)
         assert "__main__" in content

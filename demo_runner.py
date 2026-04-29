@@ -7,11 +7,11 @@ from pathlib import Path
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from ACE_Agent.agent_core.supervisor import ACESupervisor
 from ACE_Agent.agent_core.schemas import DatasetBundle
+from ACE_Agent.agent_core.supervisor import ACESupervisor
 from ACE_Agent.tools.data_factory import generate_dataset, list_demo_datasets
-from ACE_Agent.tools.settings_store import load_settings
 from ACE_Agent.tools.llm_client import LLMSettings
+from ACE_Agent.tools.settings_store import load_settings
 
 
 def main() -> None:
@@ -34,14 +34,14 @@ def main() -> None:
 
     supervisor = ACESupervisor()
     dataset = generate_dataset(args.dataset, n_samples=args.samples, noise=args.noise, random_state=42)
-    
+
     # 第一次运行
     first_prompt = args.prompt or f"请分析 {args.dataset} 数据集。"
     _process_and_print(supervisor, dataset, first_prompt, llm_settings)
 
     # 如果是交互模式或没有指定 prompt，询问用户是否要追问
     if args.interactive:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("进入交互模式（输入 'exit' 或 'quit' 退出）。")
         while True:
             try:
@@ -50,20 +50,22 @@ def main() -> None:
                     continue
                 if user_input.lower() in ["exit", "quit", "退出", "q"]:
                     break
-                
+
                 # 追问逻辑：不重新传 dataset
                 _process_and_print(supervisor, None, user_input, llm_settings)
-                
+
             except KeyboardInterrupt:
                 break
     else:
         print("\n提示: 使用 --interactive 选项可以进入连续追问模式。")
 
 
-def _process_and_print(supervisor: ACESupervisor, dataset: DatasetBundle | None, prompt: str, llm_settings: LLMSettings):
+def _process_and_print(
+    supervisor: ACESupervisor, dataset: DatasetBundle | None, prompt: str, llm_settings: LLMSettings
+):
     print(f"\n[ACE] 处理请求: {prompt}")
     report = supervisor.run(dataset=dataset, user_prompt=prompt, llm_settings=llm_settings)
-    
+
     if report.response_type == "FOLLOW_UP":
         print("\n[ACE 分析回复]:")
         print(report.llm_summary)
@@ -82,11 +84,13 @@ def _process_and_print(supervisor: ACESupervisor, dataset: DatasetBundle | None,
             print("\n[LLM 综合点评]:")
             print(report.llm_summary)
 
+
 def _fmt(value):
     try:
         return f"{float(value):.3f}"
     except:
         return "n/a"
+
 
 if __name__ == "__main__":
     main()

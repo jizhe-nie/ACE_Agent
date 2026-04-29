@@ -1,4 +1,5 @@
 """CLI entry point: python -m ACE_Agent.benchmark [options]."""
+
 from __future__ import annotations
 
 import argparse
@@ -102,9 +103,11 @@ def main(argv: list[str] | None = None) -> int:
 
     exit_code = BenchmarkReporter.compute_exit_code(report, config.min_success_rate)
     print(f"[benchmark] Report saved to: {output_path}")
-    print(f"[benchmark] Exit code: {exit_code} "
-          f"(success_rate={report.summary['overall']['success_rate']:.1%}, "
-          f"threshold={config.min_success_rate:.0%})")
+    print(
+        f"[benchmark] Exit code: {exit_code} "
+        f"(success_rate={report.summary['overall']['success_rate']:.1%}, "
+        f"threshold={config.min_success_rate:.0%})"
+    )
     return exit_code
 
 

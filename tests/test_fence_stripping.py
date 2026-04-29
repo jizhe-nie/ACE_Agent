@@ -7,6 +7,7 @@ Covers the bug where ``str.strip("```python")`` stripped a *character set*
 rather than a substring, leaving markdown fences embedded in LLM-generated
 code and causing the sandbox to fail silently (empty ``artifacts``).
 """
+
 from __future__ import annotations
 
 import sys
@@ -22,23 +23,13 @@ from ACE_Agent.expert_sub_agents.base import _strip_code_fences  # noqa: E402
 
 def _looks_executable(code: str) -> bool:
     """Heuristic: stripped code should begin with plausible Python, not a fence."""
-    return (
-        not code.startswith("`")
-        and (
-            code.startswith("import ")
-            or code.startswith("from ")
-            or code.startswith("artifacts[")
-        )
+    return not code.startswith("`") and (
+        code.startswith("import ") or code.startswith("from ") or code.startswith("artifacts[")
     )
 
 
 def test_python_fence_removed():
-    raw = (
-        "```python\n"
-        "import numpy as np\n"
-        "artifacts['KMeans'] = {'labels': [], 'metrics': {}, 'plot_path': ''}\n"
-        "```"
-    )
+    raw = "```python\nimport numpy as np\nartifacts['KMeans'] = {'labels': [], 'metrics': {}, 'plot_path': ''}\n```"
     out = _strip_code_fences(raw)
     assert "```" not in out
     assert "python" not in out.splitlines()[0]  # no leading 'python' residue
@@ -61,10 +52,7 @@ def test_bare_fence_removed():
 
 
 def test_no_fence_passthrough():
-    raw = (
-        "import numpy as np\n"
-        "artifacts['KMeans'] = {'labels': [0], 'metrics': {'score': 1.0}, 'plot_path': 'k.png'}"
-    )
+    raw = "import numpy as np\nartifacts['KMeans'] = {'labels': [0], 'metrics': {'score': 1.0}, 'plot_path': 'k.png'}"
     out = _strip_code_fences(raw)
     assert out == raw.strip()
     assert "```" not in out

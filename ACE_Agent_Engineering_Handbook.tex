@@ -1,157 +1,955 @@
-\documentclass[11pt,a4paper]{article}
-\usepackage{xeCJK} 
-\usepackage[T1]{fontenc}
-\usepackage{geometry}
-\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+% ===================================================================
+% ACE Agent Engineering Handbook
+% 版本: 2.0 (2026-04-28 重写, 基于代码实况审计)
+% 编译: xelatex -shell-escape ACE_Agent_Engineering_Handbook.tex
+% ===================================================================
+\documentclass[12pt,a4paper]{article}
+
+% ---------- 中文支持 ----------
+\usepackage{ctex}
+\setCJKmainfont{SimSun}[BoldFont=SimHei,ItalicFont=KaiTi]
+\setmonofont{Consolas}
+
+% ---------- 页面布局 ----------
+\usepackage[a4paper,margin=2.5cm,headheight=14.5pt]{geometry}
 \usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{booktabs}
 \usepackage{listings}
 \usepackage{xcolor}
-\usepackage{graphicx}
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{booktabs}
-\usepackage{tikz}
-\usetikzlibrary{shapes.geometric, arrows, positioning, shadows}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{float}
 
-\title{\textbf{ACE Agent (Automated Clustering Expert) \\ 生产级智能体聚类系统工程手册 v2.0}}
-\author{系统架构组 - Gemini CLI 实验室}
-\date{2026年4月17日}
-
-\definecolor{codegreen}{rgb}{0,0.6,0}
-\definecolor{codegray}{rgb}{0.5,0.5,0.5}
-\definecolor{codepurple}{rgb}{0.58,0,0.82}
-\definecolor{backcolour}{rgb}{0.97,0.97,0.95}
-
+% ---------- 代码高亮 ----------
 \lstset{
-    backgroundcolor=\color{backcolour},   
-    commentstyle=\color{codegreen},
-    keywordstyle=\color{blue},
-    numberstyle=\tiny\color{codegray},
-    stringstyle=\color{codepurple},
     basicstyle=\ttfamily\small,
-    breakatwhitespace=false,         
-    breaklines=true,                 
-    captionpos=b,                    
-    keepspaces=true,                 
-    numbers=left,                    
-    numbersep=5pt,                  
-    showspaces=false,                
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!5},
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
     showstringspaces=false,
-    showtabs=false,                  
-    tabsize=2,
-    frame=single
+    numbers=left,
+    numberstyle=\tiny\color{gray},
 }
 
+% ---------- 页眉页脚 ----------
+\pagestyle{fancy}
+\fancyhead[L]{ACE Agent Engineering Handbook}
+\fancyhead[R]{v2.0}
+\fancyfoot[C]{\thepage}
+
+% ---------- 标题 ----------
+\title{
+    \textbf{ACE Agent}\\[4pt]
+    \large 自愈多智能体自主聚类分析系统\\[6pt]
+    \Large 工程说明书\\[12pt]
+    \normalsize 版本 2.0 — 2026年4月28日重写\\
+    \normalsize (基于代码实况审计, 替代 2025 年初版)
+}
+\author{ACE Agent Engineering Team}
+\date{}
+
 \begin{document}
-
 \maketitle
-
-\begin{abstract}
-本文档是 ACE Agent 的核心技术指南。系统采用 Orchestrator-Worker 架构，通过语义路由分发任务，并依靠专家智能体的自愈循环（Self-healing Loop）在隔离沙箱内生成并执行数据科学代码。本版本（v2.0）特别强化了对 RAG 知识检索、意图动态判定以及专家算法职责域的实现细节描述。
-\end{abstract}
-
 \tableofcontents
 \newpage
 
-\section{核心架构与逻辑平面}
+% ===================================================================
+\section{摘要}
 
-\subsection{语义路由 (MasterRouter) 的判定逻辑}
-\texttt{MasterRouter} 是系统的指挥中心，位于 \texttt{agent\_core/router.py}。它不依赖传统正则表达式，而是通过 LLM 语义分析将输入映射为 JSON 格式的意图对象。
+ACE Agent (\textbf{A}utomated \textbf{C}lustering \textbf{E}xpert) 是一个面向数据科学的自主聚类分析系统，处于 MVP / 早期可用阶段。系统采用 \textbf{Orchestrator-Worker 多智能体架构}，以 LLM 为推理核心，实现从数据画像、意图路由、专家调度、代码生成、安全沙箱执行、自动调试（自愈）到学术报告生成的完整闭环。
 
-\paragraph{意图分类逻辑}
-\begin{itemize}
-    \item \textbf{NEW\_TASK}: 当用户输入包含“分析”、“运行”、“聚类”或具体算法名（如“谱聚类”）时触发。
-    \item \textbf{FOLLOW\_UP}: 当输入包含“解释”、“为什么”、“可视化”或针对已有结果的追问时触发。
+本文档以学术级规格记录系统的：
+\begin{itemize}[nosep]
+    \item 整体架构与模块职责
+    \item 通信协议与数据流
+    \item 自愈数学模型 (Think-Act-Fix)
+    \item 安全沙箱设计
+    \item LLM 抽象层与成本治理
+    \item 部署与复现路径
 \end{itemize}
 
-\paragraph{函数实现细节：\texttt{analyze\_intent}}
-系统将最近 3 轮对话历史 (\texttt{history}) 压缩后连同当前 Prompt 送入 LLM，并使用正则 \texttt{re.search(r'\{.*\}', ...)} 强制提取 JSON 块。
+\medskip
+\textbf{运行环境}: Conda \texttt{Tumor\_Subtype\_Agent}, Python 3.10+, Windows 11 Pro.\\
+\textbf{代码规模}: $\sim$4,300 行核心代码, $\sim$1,500 行测试代码, 96 项测试通过, 覆盖率 $\sim$65\%.\\
+\textbf{硬件}: 本地 RTX 4060 Ti 8G (开发/小模型), 远端 NVIDIA A4000 16G (训练/中等模型).
 
-\subsection{主控编排器 (ACESupervisor) 的调度算法}
-\texttt{ACESupervisor} 负责协调知识引擎、路由与专家代理。
+\newpage
 
-\paragraph{核心调度流 (\texttt{run} 方法)}
-\begin{enumerate}
-    \item \textbf{意图捕获}: 调用 \texttt{MasterRouter}。
-    \item \textbf{知识注入 (RAG)}: 调用 \texttt{KnowledgeEngine.query}，若匹配到学术背景，则将知识文本前置于用户 Prompt。
-    \item \textbf{专家激活}: 
-        \begin{itemize}
-            \item 如果是 \texttt{FOLLOW\_UP}，直接进入 LLM 回答逻辑。
-            \item 如果是 \texttt{NEW\_TASK}，并发激活 \texttt{CentroidExpert} 和 \texttt{TopologyExpert}。
-        \end{itemize}
-    \item \textbf{评分与摘要}: 对所有算法结果按 \texttt{metrics['score']} 降序排列，取首位作为优胜算法生成摘要。
+% ===================================================================
+\section{系统架构总览}
+
+\subsection{架构模式}
+
+ACE Agent 采用 \textbf{Orchestrator-Worker 模式}，三层结构：
+
+\begin{enumerate}[nosep]
+    \item \textbf{路由层 (Routing Layer)}: MasterRouter 负责语义意图识别
+    \item \textbf{编排层 (Orchestration Layer)}: ACESupervisor 负责全局调度、会话管理、结果聚合
+    \item \textbf{执行层 (Execution Layer)}: 7 个领域专家 Agent 并行执行聚类任务，每个专家内含 Think-Act-Fix 自愈循环
 \end{enumerate}
 
-\section{专家智能体实现细节 (Worker Implementation)}
+\subsection{模块依赖图}
 
-\subsection{专家职责域划分}
-系统将算法按数学逻辑划分为两个主要专家：
-\begin{itemize}
-    \item \textbf{质心专家 (CentroidExpert)}: 负责 KMeans, GMM, MiniBatchKMeans。
-    \item \textbf{拓扑专家 (TopologyExpert)}: 负责 DBSCAN, SpectralClustering (谱聚类), Agglomerative, OPTICS。
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.5cm, auto,
+    block/.style={rectangle, draw, fill=blue!10, text width=3.5cm, text centered, minimum height=0.8cm, font=\small}]
+
+    \node [block] (router) {MasterRouter\\意图识别};
+    \node [block, below of=router] (supervisor) {ACESupervisor\\全局编排};
+    \node [block, left of=supervisor, xshift=-4cm] (knowledge) {KnowledgeEngine\\RAG 知识检索};
+    \node [block, right of=supervisor, xshift=4cm] (llm) {UniversalLLMClient\\LLM 抽象层};
+    \node [block, below of=supervisor, yshift=-1cm] (experts) {Expert Agents $\times$ 7\\Think-Act-Fix};
+    \node [block, below of=experts] (sandbox) {CoderSandbox\\安全沙箱};
+    \node [block, right of=sandbox, xshift=3cm] (latex) {LatexReportGenerator\\LaTeX 报告};
+
+    \draw [->] (router) -- (supervisor);
+    \draw [->] (knowledge) -- (supervisor);
+    \draw [->] (supervisor) -- (llm);
+    \draw [->] (supervisor) -- (experts);
+    \draw [->] (experts) -- (sandbox);
+    \draw [->] (sandbox) -- (experts);
+    \draw [->] (supervisor) -- (latex);
+\end{tikzpicture}
+\caption{ACE Agent 模块依赖图}
+\end{figure}
+
+\subsection{文件清单与职责}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{7cm}@{}}
+\toprule
+\textbf{文件} & \textbf{职责} \\
+\midrule
+\texttt{agent\_core/router.py} & LLM 语义意图分类 (NEW\_TASK / FOLLOW\_UP / CODE\_EXAMPLE) \\
+\texttt{agent\_core/supervisor.py} & 全局编排：专家调度、结果排序、LLM 摘要生成 \\
+\texttt{agent\_core/schemas.py} & 核心数据结构 (DatasetBundle, SupervisorReport, 等) \\
+\texttt{expert\_sub\_agents/base.py} & 专家基类：Think-Act-Fix 自愈循环框架 \\
+\texttt{expert\_sub\_agents/centroid\_expert.py} & 质心专家：KMeans / GMM \\
+\texttt{expert\_sub\_agents/topology\_expert.py} & 拓扑专家：DBSCAN / Spectral / HDBSCAN / Agglomerative \\
+\texttt{expert\_sub\_agents/zoo\_expert.py} & 动物园专家：10 算法确定性批量运行，不依赖 LLM 生成代码 \\
+\texttt{expert\_sub\_agents/critic\_expert.py} & 评价专家：Hopkins 统计量聚类趋势审计 \\
+\texttt{expert\_sub\_agents/dimension\_expert.py} & 维度专家：PCA / UMAP / t-SNE 预处理 \\
+\texttt{expert\_sub\_agents/deep\_representation.py} & 深度表示专家：PyTorch AE + KMeans \\
+\texttt{expert\_sub\_agents/multi\_view\_expert.py} & 多视图专家：跨视图共识聚类 (WIP, Phase 2+) \\
+\texttt{tools/coder\_sandbox.py} & 安全沙箱：受限命名空间 + 超时 + 内存限额 \\
+\texttt{tools/llm\_client.py} & LLM 抽象层：Provider ABC + 4 种实现 + 自动 fallback \\
+\texttt{tools/algorithm\_zoo.py} & 算法目录：10 种聚类算法的元数据与代码生成 \\
+\texttt{tools/data\_factory.py} & 数据工厂：13 种数据集的生成/加载 \\
+\texttt{tools/latex\_generator.py} & LaTeX 报告生成器 \\
+\texttt{agent\_brain/knowledge\_engine.py} & RAG 引擎：ChromaDB + SentenceTransformer \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+
+% ===================================================================
+\section{核心模块详解}
+
+\subsection{MasterRouter --- 意图路由器}
+
+\textbf{位置}: \texttt{agent\_core/router.py} (85 行)
+
+Router 使用 LLM 对用户输入进行三分类语义识别：
+
+\begin{tcolorbox}[title=三种意图, colback=blue!5]
+\begin{description}[nosep, style=nextline]
+    \item[NEW\_TASK] 在当前数据集上执行新的聚类实验。触发条件：用户想运行实验、获取分析结果。
+    \item[FOLLOW\_UP] 追问已有结果、解释理论、学术咨询。不需要重跑算法。
+    \item[CODE\_EXAMPLE] 用户索要代码本身，非执行实验。(P0.5 新增)
+\end{description}
+\end{tcolorbox}
+
+\textbf{兜底策略}: Router 异常时 fallback 到 FOLLOW\_UP (而非 NEW\_TASK)，避免误触发昂贵的完整分析流程。JSON 解析失败时、未知意图值时均遵循此原则。
+
+\textbf{设计要点}:
+\begin{itemize}[nosep]
+    \item 强制返回 JSON: \texttt{\{"intent": "...", "target\_dataset": "...", "reasoning": "..."\}}
+    \item 正则提取 JSON (容错 LLM 输出的额外文本)
+    \item 仅接受已知意图值，未知意图 fallback 到 FOLLOW\_UP
 \end{itemize}
 
-\subsection{自愈循环 (Self-Correction Loop) 实现}
-实现在 \texttt{expert\_sub\_agents/base.py} 的 \texttt{execute\_with\_self\_correction} 方法中。
+\subsection{ACESupervisor --- 全局编排器}
 
-\paragraph{算法流程}
+\textbf{位置}: \texttt{agent\_core/supervisor.py} (345 行)
+
+\subsubsection{初始化与专家注册}
+
 \begin{lstlisting}[language=Python]
-for attempt in range(1, 4):
-    code = generate_or_fix_code(prompt, error_msg)
-    run_result = sandbox.execute(code, X, y)
-    if run_result.success:
-        save_artifacts()
-        return results
-    else:
-        extract_traceback() # 提取最后 200 字符报错
+# 默认激活专家 (P0.5 升级)
+_DEFAULT_ACTIVE_EXPERTS = ["centroid", "topology", "zoo", "critic"]
+
+def __init__(self):
+    self.router = MasterRouter()
+    self.knowledge_engine = KnowledgeEngine()
+    self.experts = build_expert_registry()  # 7 个专家
+    self.memory = []  # 会话记忆
 \end{lstlisting}
 
-\section{RAG 知识引擎 (Knowledge Engine)}
-
-\subsection{知识扫描与去重}
-\texttt{KnowledgeEngine} 使用 \texttt{ingested\_manifest.json} 维护一个 MD5 哈希列表。扫描 \texttt{docs/} 目录时，仅处理哈希值变动或新增的文件。
-
-\subsection{向量检索配置}
-\begin{itemize}
-    \item \textbf{Embedding 模型}: \texttt{all-MiniLM-L6-v2} (本地运行)。
-    \item \textbf{持久化库}: ChromaDB。
-    \item \textbf{环境变量注入}: 强制设置 \texttt{HF\_HUB\_OFFLINE=1} 以确保离线环境下的启动速度。
+\textbf{专家注册表} (via \texttt{build\_expert\_registry()}):
+\begin{itemize}[nosep]
+    \item 就绪: centroid, topology, zoo, critic, dimension, deep\_representation
+    \item WIP (Phase 2+): multi\_view
+    \item 注册时自动跳过未实现抽象方法的专家 (try/except TypeError)
 \end{itemize}
 
-\section{安全沙箱与代码隔离 (CoderSandbox)}
+\subsubsection{编排主流程}
 
-\subsection{执行环境构造}
-在 \texttt{tools/coder\_sandbox.py} 中，通过 \texttt{exec()} 运行代码前会初始化一个受限字典 \texttt{exec\_env}。
+\begin{enumerate}[nosep]
+    \item \textbf{语义路由}: 调用 \texttt{MasterRouter.analyze\_intent()} 得到意图
+    \item \textbf{RAG 增强}: 从 ChromaDB 检索相关知识注入用户 prompt
+    \item \textbf{意图分流}:
+    \begin{itemize}[nosep]
+        \item FOLLOW\_UP $\rightarrow$ \texttt{\_handle\_follow\_up()} (纯 LLM 回答)
+        \item CODE\_EXAMPLE $\rightarrow$ \texttt{\_handle\_code\_example()} (生成代码 Markdown，不走沙箱)
+        \item NEW\_TASK $\rightarrow$ \texttt{\_execute\_full\_analysis()} (执行完整实验)
+    \end{itemize}
+    \item \textbf{高维感知}: 当 $n\_features > 2$ 时自动激活 dimension 专家
+    \item \textbf{并行执行}: 遍历 active\_experts，每个专家调用 \texttt{execute\_with\_self\_correction()}
+    \item \textbf{结果排序}: 按 score 降序排列 all\_results
+    \item \textbf{LLM 摘要}: 调用 \texttt{summarize\_report()} 生成中文总结
+    \item \textbf{LaTeX 报告}: 自动生成学术 PDF (静默失败不阻塞 UI)
+\end{enumerate}
 
-\paragraph{注入变量清单}
-\begin{itemize}
-    \item \texttt{X, y}: 内存中的 numpy 数组。
-    \item \texttt{plt, np}: 预导入的数据科学库。
-    \item \texttt{artifacts}: 空字典，用于专家回传结果。
+\subsubsection{错误报告增强 (P0.5)}
+
+\texttt{\_error\_report()} 汇总每个专家最后 3 行日志作为排错依据，而非仅输出通用错误信息。
+
+\subsection{BaseExpert --- 自愈循环框架}
+
+\textbf{位置}: \texttt{expert\_sub\_agents/base.py} (205 行)
+
+这是 ACE Agent 最核心的机制。所有专家继承 \texttt{BaseExpert} 并实现 \texttt{\_generate\_code()}。
+
+\subsubsection{Think-Act-Fix 数学模型}
+
+定义符号：
+\begin{itemize}[nosep]
+    \item $C_0$: 初始生成的代码 (LLM 产出)
+    \item $\mathcal{S}$: 沙箱执行算子, $\mathcal{S}(C) \rightarrow (success, artifacts, error)$
+    \item $\mathcal{F}$: 修复算子, $\mathcal{F}(C, e, i) \rightarrow C_i$, 其中 $e$ 为错误信息, $i$ 为尝试次数
+    \item $N_{max} = 3$: 最大重试次数
+    \item $\mathcal{A}$: artifacts 验证算子, $\mathcal{A}(r) \equiv r.success \wedge r.artifacts \neq \emptyset$
 \end{itemize}
 
-\paragraph{输出捕获机制}
-专家生成的代码必须将结果存入 \texttt{artifacts['算法名']}，包含 \texttt{labels}、\texttt{metrics} 和 \texttt{plot\_path} 三个必填字段，否则会被判定为执行失败。
+\textbf{算法流程}:
 
-\section{API 参考手册 (API Reference)}
+\begin{enumerate}[nosep]
+    \item \textbf{Think}: LLM 生成初始代码 $C_0 = \text{expert}.\textit{generate\_code}(client, dataset, prompt)$
+    \item \textbf{Act}: 沙箱执行 $r = \mathcal{S}(C_0)$
+    \item \textbf{Evaluate}: 检查 $\mathcal{A}(r)$
+    \begin{itemize}[nosep]
+        \item 若 $\mathcal{A}(r) = true$: 成功, 返回 artifacts 中的 AlgorithmRunResult 列表
+        \item 若 $r.success \wedge r.artifacts = \emptyset$: \textbf{软失败} --- 注入 artifacts 约定提示后重试
+        \item 若 $\neg r.success$: \textbf{硬失败} --- 注入错误 traceback 后重试
+    \end{itemize}
+    \item \textbf{Fix}: $C_{i} = \mathcal{F}(C_{i-1}, e_{i-1}, i)$, $i \in [1, N_{max}]$, 跳回步骤 2
+    \item 若 $i > N_{max}$: 重试耗尽, 返回空结果
+\end{enumerate}
 
-\subsection{\texttt{UniversalLLMClient}}
-\begin{itemize}
-    \item \texttt{chat\_completion(messages, system\_prompt)}: 具备自动重试机制的通用接口。
-    \item \texttt{summarize\_report(payload)}: 接收 \texttt{user\_intent} 参数，实现意图优先的报告摘要。
+\textbf{软失败检测 (P0.5-Bug3 修复)}: 原实现仅检查 \texttt{success=True}，忽略 \texttt{artifacts=\{\}} 情况。修复后判据为 $\mathcal{A}(r) = success \wedge artifacts \neq \emptyset$。
+
+\textbf{软失败根因诊断}: 检测代码中的常见模式错误：
+\begin{itemize}[nosep]
+    \item \texttt{if \_\_name\_\_ == "\_\_main\_\_":} 守卫 --- 沙箱中 \texttt{\_\_name\_\_ = "\_\_ace\_sandbox\_\_"}
+    \item \texttt{def main() / def run()} 定义但未调用
 \end{itemize}
 
-\subsection{\texttt{LatexReportGenerator}}
-\begin{itemize}
-    \item \texttt{generate(report)}: 动态扫描 \texttt{report.results}，为每个算法生成 \texttt{\textbackslash subsection}，并将 \texttt{plot\_path} 转换为 \LaTeX 路径。
+\subsubsection{Artifacts 契约}
+
+所有专家生成的代码必须遵循此约定，写入沙箱注入的 \texttt{artifacts} 字典：
+
+\begin{lstlisting}[language=Python]
+artifacts[algo_name] = {
+    "labels": <list or np.ndarray>,
+    "metrics": {"score": float, "score_source": str, ...},
+    "plot_path": str  # matplotlib 保存的图片路径
+}
+\end{lstlisting}
+
+\textbf{禁止}: 写入其他变量名、将逻辑隐藏在未调用函数中。
+
+\subsubsection{代码清洗}
+
+LLM 经常在代码外包裹 Markdown fence (\texttt{```python ... ```})。\texttt{\_strip\_code\_fences()} 在沙箱执行前移除这些包装。
+
+\subsection{CoderSandbox --- 安全沙箱}
+
+\textbf{位置}: \texttt{tools/coder\_sandbox.py} (340 行)
+
+\subsubsection{安全模型}
+
+三层防护：
+
+\begin{enumerate}[nosep]
+    \item \textbf{受限命名空间}: 仅开放 SAFE\_BUILTINS (28 个安全内置函数), 不包含 \texttt{eval/exec/compile/open/\_\_import\_\_} 等危险函数
+    \item \textbf{Wall-Clock 超时}: 通过 \texttt{threading.Timer} 实现，默认 $t_{max} = 60s$ (环境变量 \texttt{ACE\_SANDBOX\_TIMEOUT\_SEC} 可配)
+    \item \textbf{内存上限}: 基于 \texttt{psutil} 的 delta-RSS 监控，默认 $M_{max} = 2048$ MiB (环境变量 \texttt{ACE\_SANDBOX\_MEMORY\_MB} 可配)
+\end{enumerate}
+
+\textbf{超限信号}: 抛出 \texttt{SandboxResourceExceeded(reason, detail)}，其中 \texttt{reason} $\in$ \{"timeout", "memory"\}。自愈循环捕获此异常后不重试，直接上报。
+
+\subsubsection{内存监控实现}
+
+\begin{lstlisting}[language=Python]
+class _MemoryWatchdog(threading.Thread):
+    """后台线程每 0.5s 轮询当前进程 RSS。
+
+    追踪 RSS 增量 (RSS_current - RSS_baseline) 而非绝对值，
+    使得基线进程内存 (numpy, torch) 不计入限额。
+    """
+    def run(self):
+        proc = psutil.Process(os.getpid())
+        while not self._stop_event.is_set():
+            current_mb = proc.memory_info().rss / (1024 * 1024)
+            delta_mb = max(0.0, current_mb - self._baseline_mb)
+            if delta_mb > self.limit_mb:
+                self.exceeded = True
+                return
+\end{lstlisting}
+
+\subsubsection{Artifacts 救援机制}
+
+沙箱执行后，若标准 \texttt{artifacts} 字典为空，启动 broad-rescue 扫描：
+
+\begin{enumerate}[nosep]
+    \item 检查 \texttt{exec\_env["result"]} 是否符合 artifacts 形状
+    \item 扫描所有用户定义变量 (排除注入变量、私有变量、可调用对象)，寻找符合 artifacts 形状的 dict
+\end{enumerate}
+
+Artifacts 形状识别 (\texttt{\_looks\_like\_artifacts}): 非空 dict，至少包含一个值为含有 \texttt{"labels"} 键的字典。
+
+\subsection{UniversalLLMClient --- LLM 抽象层}
+
+\textbf{位置}: \texttt{tools/llm\_client.py} (415 行)
+
+\subsubsection{Provider 架构}
+
+\begin{lstlisting}[language=Python]
+# Abstract Base Class
+class LLMProvider(ABC):
+    @abstractmethod
+    def chat(self, messages, **kwargs) -> str: ...
+    def count_tokens(self, text) -> int: ...
+
+# Concrete Implementations
+class OpenAICompatibleProvider(LLMProvider): ...  # 通用 OpenAI-compat
+class DeepSeekProvider(OpenAICompatibleProvider): ...  # DeepSeek 定价
+class DashScopeProvider(OpenAICompatibleProvider): ...  # 阿里 DashScope
+class OpenAIProvider(OpenAICompatibleProvider): ...  # OpenAI 官方
+\end{lstlisting}
+
+出厂映射 (\texttt{\_PROVIDER\_CLASSES}): DeepSeek, DashScope, OpenAI, Moonshot, Gemini。未注册名称 fallback 到 \texttt{OpenAICompatibleProvider}。
+
+\subsubsection{Fallback 策略}
+
+\begin{itemize}[nosep]
+    \item 触发条件: HTTP 429 / 500 / 502 / 503 / 504 或请求超时
+    \item 次数限制: 最多 1 次 fallback (primary $\rightarrow$ secondary)
+    \item 日志: fallback 事件写入 \texttt{outputs/llm\_trace.jsonl}
 \end{itemize}
 
-\section{部署与排烟测试}
+\subsubsection{成本追踪}
 
-\subsection{中文字体支持方案}
-由于在 Windows 环境下 \texttt{matplotlib} 默认不识别中文，系统在启动时会检测 \texttt{Win32} 平台并尝试加载“微软雅黑”或“黑体”。
+每次 LLM 调用产出结构化 trace 记录落盘到 \texttt{outputs/llm\_trace.jsonl}:
 
-\subsection{离线模式 (Offline Mode)}
-通过屏蔽 \texttt{transformers} 的日志输出 (\texttt{VERBOSITY=error})，解决了大规模知识库加载时的终端卡顿问题。
+\begin{lstlisting}[language=json]
+{
+  "timestamp": "2026-04-28T...",
+  "model": "qwen-plus",
+  "provider": "DashScope",
+  "prompt_tokens": 1520,
+  "completion_tokens": 480,
+  "latency_ms": 2340,
+  "caller": "topology:generate",
+  "is_retry": false,
+  "attempt": 1,
+  "fallback_triggered": false,
+  "cost_usd": 0.0012
+}
+\end{lstlisting}
+
+\textbf{caller 字段约定}:
+\begin{itemize}[nosep]
+    \item 初始生成: \texttt{"\{expert\_key\}:generate"}
+    \item 第 N 次重试修复: \texttt{"\{expert\_key\}:fix:N"}
+    \item 报告摘要: \texttt{"summarize\_report"}
+    \item 未知: \texttt{"unknown"}
+\end{itemize}
+
+Token 计数使用 \texttt{tiktoken cl100k\_base} 编码 (近似值，兼容 GPT-4 / DeepSeek 系列)。
+
+\subsubsection{成本估算}
+
+各 Provider 预置价格常数为每 1K tokens 的 USD 成本:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Provider} & \textbf{Input (\$/1K)} & \textbf{Output (\$/1K)} \\
+\midrule
+DeepSeek & 0.00014 & 0.00028 \\
+DashScope & 0.0004 & 0.0012 \\
+OpenAI (GPT-4o) & 0.005 & 0.015 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{AlgorithmZoo --- 算法目录}
+
+\textbf{位置}: \texttt{tools/algorithm\_zoo.py} (135 行)
+
+目录包含 10 种聚类算法：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{算法} & \textbf{类别} & \textbf{关键参数} \\
+\midrule
+KMeans & centroid & n\_clusters \\
+GaussianMixture & centroid & n\_components \\
+DBSCAN & topology & eps, min\_samples \\
+HDBSCAN & topology & min\_cluster\_size \\
+AgglomerativeClustering & topology & n\_clusters \\
+SpectralClustering & topology & n\_clusters, affinity=nearest\_neighbors \\
+OPTICS & topology & min\_samples \\
+Birch & centroid & n\_clusters \\
+AffinityPropagation & centroid & (auto) \\
+MeanShift & topology & (auto) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{get\_algorithm\_code()} 为 ZooExpert 生成确定性的可执行代码片段 (不依赖 LLM)。
+
+\subsection{DataFactory --- 数据工厂}
+
+\textbf{位置}: \texttt{tools/data\_factory.py} (251 行)
+
+支持 13 种数据集：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{数据集} & \textbf{来源} & \textbf{特征数} & \textbf{形状族} \\
+\midrule
+blobs & 合成 & 2 & spherical \\
+moons & 合成 & 2 & non\_convex \\
+s\_curve & 合成 & 3 & manifold \\
+smile & 合成 & 2 & non\_convex \\
+high\_dim & 合成 & 100 & spherical \\
+iris & UCI & 4 & spherical \\
+wine & UCI & 13 & spherical \\
+digits & UCI & 64 & spherical \\
+mnist & OpenML & 784 & manifold \\
+news & sklearn & 1000 (TF-IDF) & sparse \\
+mfeat & UCI & 649 & multi\_view \\
+multi\_view & 合成 & 20 & manifold \\
+custom & 用户上传 & 可变 & unknown \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{infer\_dataset\_from\_prompt()} 提供关键词匹配，从用户自然语言中推断目标数据集。
+
+\subsection{KnowledgeEngine --- RAG 知识引擎}
+
+\textbf{位置}: \texttt{agent\_brain/knowledge\_engine.py} (102 行)
+
+基于 ChromaDB + SentenceTransformer 的轻量 RAG 系统：
+\begin{itemize}[nosep]
+    \item 向量化: \texttt{all-MiniLM-L6-v2} (默认)
+    \item 语料来源: \texttt{taxonomy\_rules.md}, \texttt{algorithm\_limits.md}, \texttt{metric\_logic.json}
+    \item 检索方式: 余弦相似度 top-k
+    \item 注: 当前为单领域 MVP，不具备多领域并行治理能力 (Phase 4 规划)
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{数据流与通信协议}
+
+\subsection{主流程数据流}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm, auto,
+    block/.style={rectangle, draw, fill=blue!10, text width=3cm, text centered, minimum height=0.7cm, font=\small},
+    data/.style={rectangle, draw, fill=green!10, text width=3.5cm, text centered, minimum height=0.6cm, font=\footnotesize}]
+
+    \node [block] (input) {用户输入 + 数据集};
+    \node [block, below of=input] (router) {MasterRouter};
+    \node [data, right of=router, xshift=3.5cm] (intent) {RoutingDecision\\intent + reasoning};
+    \node [block, below of=router] (supervisor) {ACESupervisor};
+    \node [block, below of=supervisor, xshift=-3cm] (expert1) {Expert 1};
+    \node [block, below of=supervisor] (expert2) {Expert 2};
+    \node [block, below of=supervisor, xshift=3cm] (expert3) {Expert N};
+    \node [block, below of=expert2] (sandbox) {CoderSandbox};
+    \node [data, right of=sandbox, xshift=3.5cm] (result) {AlgorithmRunResult\\labels + metrics + plot};
+    \node [block, below of=sandbox] (ranking) {Ranking \& Summary};
+
+    \draw [->] (input) -- (router);
+    \draw [->] (router) -- (supervisor);
+    \draw [->] (supervisor) -- (expert1);
+    \draw [->] (supervisor) -- (expert2);
+    \draw [->] (supervisor) -- (expert3);
+    \draw [->] (expert1) -- (sandbox);
+    \draw [->] (expert2) -- (sandbox);
+    \draw [->] (expert3) -- (sandbox);
+    \draw [->] (sandbox) -- (ranking);
+\end{tikzpicture}
+\caption{主流程 (NEW\_TASK) 数据流}
+\end{figure}
+
+\subsection{核心数据结构}
+
+\subsubsection{DatasetBundle}
+
+\begin{lstlisting}[language=Python]
+@dataclass
+class DatasetBundle:
+    name: str                 # 内部标识 (blobs, iris, ...)
+    X: np.ndarray             # 特征矩阵 (n_samples, n_features)
+    y: np.ndarray | None      # 标签向量 (可选)
+    display_name: str         # 用户可见中文名
+    description: str          # 数据集描述
+    shape_family: str         # spherical / non_convex / manifold / sparse / multi_view
+    feature_names: list[str]  # 特征名列表
+    metadata: dict            # 扩展字段 (expected_clusters 等)
+\end{lstlisting}
+
+\subsubsection{AlgorithmRunResult}
+
+\begin{lstlisting}[language=Python]
+@dataclass
+class AlgorithmRunResult:
+    algorithm_name: str       # 算法名 (KMeans, DBSCAN, ...)
+    expert_key: str           # 来源专家
+    expert_label: str         # 专家标签 (中文)
+    labels: np.ndarray        # 聚类标签
+    metrics: dict             # {"score": 0.85, "score_source": "silhouette", ...}
+    plot_path: Path           # 聚类可视化图片路径
+    code: str = ""            # 执行的 Python 代码 (可复现)
+    params: dict              # 算法参数
+\end{lstlisting}
+
+\subsubsection{SupervisorReport}
+
+\begin{lstlisting}[language=Python]
+@dataclass
+class SupervisorReport:
+    dataset: DatasetBundle
+    routing: RoutingDecision
+    dataset_plot_path: Path
+    output_dir: Path
+    results: list[AlgorithmRunResult]
+    ranking: list[AlgorithmRunResult]        # 按 score 降序
+    executive_summary: str                   # LLM 生成的中文总结
+    decision_trace: list[str]                # 执行日志
+    latex_path: Path | None                  # LaTeX PDF 路径
+    response_type: str                       # CLUSTER_TASK / FOLLOW_UP / CODE_EXAMPLE
+\end{lstlisting}
+
+\subsection{三种响应路径}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}p{2.5cm}p{4.5cm}p{4.5cm}@{}}
+\toprule
+\textbf{意图} & \textbf{处理方式} & \textbf{产出} \\
+\midrule
+NEW\_TASK & 完整实验：RAG 检索 $\rightarrow$ 专家并行执行 $\rightarrow$ 沙箱自愈 $\rightarrow$ 排序 $\rightarrow$ 摘要 $\rightarrow$ LaTeX 报告 & 聚类标签、指标、可视化的完整分析报告 \\
+FOLLOW\_UP & 纯 LLM 回答：基于会话记忆 + RAG 知识解答 & 文本回答 \\
+CODE\_EXAMPLE & LLM 生成代码 Markdown，不走沙箱 & 自包含 Python 代码块 (含 import 和可视化) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+
+% ===================================================================
+\section{Benchmark 评估套件}
+
+ACE Agent v2.0 引入标准 Benchmark 套件（\texttt{benchmark/} 包），支持离线（CI）和在线（完整 LLM）两种模式，为 Phase 1 及以后的所有改进提供可复现的量化依据。
+
+\subsection{架构}
+
+\begin{lstlisting}[language=bash]
+ACE_Agent/benchmark/
+  __init__.py       # BenchmarkConfig, BenchmarkRunResult, BenchmarkReport
+  config.py         # BenchmarkConfig dataclass
+  runner.py         # BenchmarkRunner 编排器
+  metrics.py        # ClusteringMetricsCalculator + 自愈统计
+  reporter.py       # BenchmarkReporter (JSON输出 + 退出码)
+  __main__.py       # CLI: python -m ACE_Agent.benchmark
+\end{lstlisting}
+
+\subsection{核心指标}
+
+每个（数据集, 专家, 算法）三元组产出：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{指标} & \textbf{来源} & \textbf{说明} \\
+\midrule
+ARI & \texttt{sklearn.metrics.adjusted\_rand\_score} & 外部指标（需 ground-truth） \\
+Silhouette & \texttt{sklearn.metrics.silhouette\_score} & 内部凝聚度 \\
+Calinski-Harabasz & \texttt{sklearn.metrics.calinski\_harabasz\_score} & 内部方差比 \\
+Davies-Bouldin & \texttt{sklearn.metrics.davies\_bouldin\_score} & 内部紧密度（越低越好） \\
+重试次数 & \texttt{expert.last\_logs} 解析 & 自愈效率 \\
+Token 消耗 & \texttt{outputs/llm\_trace.jsonl} & 成本追踪 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{三层 LLM 依赖策略}
+
+通过 \texttt{BaseExpert.REQUIRES\_LLM} 属性区分：
+\begin{itemize}[nosep]
+    \item \textbf{Tier 1 (CI 离线)}: 仅 ZooExpert，无需 LLM 密钥，5–7 数据集，200 样本
+    \item \textbf{Tier 2 (本地半在线)}: ZooExpert + Centroid + Topology，需 LLM 配置
+    \item \textbf{Tier 3 (完整在线)}: 全部 7 个专家，需完整 LLM 配置
+\end{itemize}
+
+\subsection{CLI 使用}
+
+\begin{lstlisting}[language=bash]
+# CI 离线模式（默认）
+python -m ACE_Agent.benchmark --offline
+
+# 自定义参数
+python -m ACE_Agent.benchmark \
+  --datasets blobs,moons,iris,wine,s_curve \
+  --experts zoo --n-samples 200 \
+  --output outputs/benchmark_ci.json
+\end{lstlisting}
+
+\subsection{最新基准结果（2026-04-28）}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{数据集} & \textbf{算法数} & \textbf{成功率} & \textbf{Avg ARI} & \textbf{Avg Silhouette} \\
+\midrule
+blobs & 10 & 100\% & 0.904 & 0.730 \\
+moons & 10 & 100\% & 0.594 & 0.366 \\
+iris  & 10 & 100\% & 0.451 & 0.346 \\
+wine  & 10 & 100\% & 0.544 & 0.006 \\
+s\_curve & 10 & 100\% & 0.228 & 0.155 \\
+\bottomrule
+\end{tabular}
+\caption{ZooExpert 离线基准（200 样本/数据集，50 次算法运行）}
+\end{table}
+
+\texttt{s\_curve} 的 ARI 仅 0.228 表明 3D 流形数据上所有标准算法均表现不佳——这正是 Dimension Expert + Deep Representation Expert 应解决的场景。
+
+\newpage
+
+% ===================================================================
+\section{自愈能力的形式化分析}
+
+\subsection{自愈成功率模型}
+
+定义自愈成功率 $H$:
+
+\begin{equation}
+H = \frac{|{C_i: \mathcal{A}(\mathcal{S}(C_i)) = true, i \in [0, N_{max}]}|}{|{C_0: \text{generated}}|}
+\end{equation}
+
+其中 $C_0$ 为 LLM 生成的初始代码，$C_i (i \geq 1)$ 为第 $i$ 次修复后的代码。
+
+当前系统 $N_{max} = 3$，$H$ 的期望值取决于：
+\begin{itemize}[nosep]
+    \item $P_{gen}$: 初始生成代码直接成功的概率 (取决于 LLM 能力 + prompt 质量)
+    \item $P_{fix}$: 单次修复成功的概率 (取决于错误信息质量 + LLM 纠错能力)
+\end{itemize}
+
+\begin{equation}
+H = 1 - (1 - P_{gen}) \cdot (1 - P_{fix})^{N_{max}}
+\end{equation}
+
+\subsection{修复成功率的影响因子}
+
+\begin{enumerate}[nosep]
+    \item \textbf{错误信息质量}: 沙箱提供完整 traceback，帮助 LLM 精确定位
+    \item \textbf{软失败诊断}: 检测 artifacts 约定违反模式，给出针对性提示而非通用错误
+    \item \textbf{代码约束}: 显式导入要求、artifacts 契约文档、沙箱环境说明
+    \item \textbf{重试次数}: $N_{max} = 3$ 是成本与成功率的折中选择
+\end{enumerate}
+
+\subsection{成本模型}
+
+设每个专家组 $\mathcal{E}$ 包含 $N$ 个专家并行执行。单次任务的总 Token 消耗:
+
+\begin{equation}
+T_{total} = T_{route} + T_{rag} + \sum_{e=1}^{N} \sum_{i=0}^{r_e} (T_{gen}^{(i)} + T_{code}^{(i)})
+\end{equation}
+
+其中 $r_e$ 为专家 $e$ 的实际重试次数 (均 $\leq N_{max}$), $T_{route}$ 为 Router 消耗, $T_{rag}$ 为 RAG 查询消耗。
+
+预估成本:
+\begin{equation}
+\text{Cost}_{USD} = \frac{T_{total}^{input}}{1000} \cdot c_{input} + \frac{T_{total}^{output}}{1000} \cdot c_{output}
+\end{equation}
+
+\textbf{风险}: 自愈 3 次 $\times$ N 个专家可能导致 Token 指数膨胀。当前已通过 trace 日志追踪，但策略层面尚无预算上限熔断机制 (Phase 1 规划)。
+
+\newpage
+
+% ===================================================================
+\section{部署与配置}
+
+\subsection{环境要求}
+
+\begin{itemize}[nosep]
+    \item Python 3.10+
+    \item Conda 环境: \texttt{Tumor\_Subtype\_Agent}
+    \item Windows 11 Pro (也兼容 Linux/macOS)
+    \item GPU (可选): CUDA 支持的 NVIDIA GPU, 8G+ 显存 (仅 Phase 3 深度聚类需要)
+\end{itemize}
+
+\subsection{依赖安装}
+
+\begin{lstlisting}[language=bash]
+# 运行时依赖
+pip install -r requirements.txt
+# 核心库: streamlit, numpy, pandas, matplotlib, scikit-learn, torch, requests, loguru, scipy
+
+# 开发依赖
+pip install -r requirements-dev.txt
+# 核心库: pytest, pytest-cov, ruff, mypy, pre-commit, psutil, tiktoken
+
+# 中文支持 (matplotlib)
+pip install charset-normalizer
+\end{lstlisting}
+
+\subsection{LLM 配置}
+
+在项目根目录创建 \texttt{.env} 文件:
+
+\begin{lstlisting}
+ACE_LLM_ENABLED=true
+ACE_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ACE_LLM_API_KEY=sk-xxxxxxxxxxxxxxxx
+ACE_LLM_MODEL=qwen-plus
+\end{lstlisting}
+
+当前生产环境使用 DashScope (qwen-plus)。Web 界面 (\texttt{web\_demo.py}) 也支持在侧边栏配置 Fallback Provider。
+
+\subsection{启动}
+
+\begin{lstlisting}[language=bash]
+streamlit run web_demo.py
+# 或命令行模式:
+python demo_runner.py
+\end{lstlisting}
+
+\subsection{Docker}
+
+\begin{lstlisting}[language=bash]
+docker build -t ace-agent .
+docker run -p 8501:8501 --env-file .env ace-agent
+\end{lstlisting}
+
+注: Dockerfile 存在但尚未构成完整服务化闭环 (缺 FastAPI 层、鉴权、任务队列)。
+
+\subsection{沙箱配置}
+
+\begin{lstlisting}[language=bash]
+# 可选的超时和内存覆盖
+export ACE_SANDBOX_TIMEOUT_SEC=120    # 默认 60s
+export ACE_SANDBOX_MEMORY_MB=4096     # 默认 2048 MiB
+\end{lstlisting}
+
+\newpage
+
+% ===================================================================
+\section{测试与质量保障}
+
+\subsection{测试套件}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{3.5cm}p{5cm}@{}}
+\toprule
+\textbf{文件} & \textbf{测试范围} & \textbf{用例数} \\
+\midrule
+\texttt{test\_core.py} & Router, LLMSettings, Dataset, Supervisor & 核心集成 \\
+\texttt{test\_p0.py} & Token, Provider, Sandbox, Trace, Fallback & Phase 0 基线 \\
+\texttt{test\_zoo\_expert.py} & ZooExpert 生成、执行、软失败 & 动物园专家 \\
+\texttt{test\_zoo\_score\_priority.py} & ARI 优先级 > silhouette (有标签场景) & 评分策略 \\
+\texttt{test\_sandbox\_rescue.py} & Artifacts 救援、\_\_main\_\_ 守卫检测 & 沙箱 \\
+\texttt{test\_soft\_failure\_diagnosis.py} & success=True + artifacts 空 = 软失败 & 自愈回归 \\
+\texttt{test\_fence\_stripping.py} & Markdown 代码块去除 & 代码清洗 \\
+\texttt{test\_follow\_up.py} & FOLLOW\_UP 意图路径 (需 live LLM, 自动跳过) & 集成 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{运行测试}
+
+\begin{lstlisting}[language=bash]
+# 必须从 D:\PycharmProject 父目录运行
+cd D:\PycharmProject
+python -m pytest ACE_Agent/tests -v --tb=short
+
+# 带覆盖率
+python -m pytest ACE_Agent/tests --cov=ACE_Agent --cov-report=term
+
+# 仅在 CI 中设置失败门槛
+python -m pytest ACE_Agent/tests --cov=ACE_Agent --cov-fail-under=30
+\end{lstlisting}
+
+\subsection{CI/CD}
+
+GitHub Actions (\texttt{.github/workflows/ci.yml}):
+\begin{itemize}[nosep]
+    \item \textbf{Lint}: ruff check (全部文件)
+    \item \textbf{Type check}: mypy (continue-on-error, Phase 0 宽松配置)
+    \item \textbf{Test}: pytest + coverage with \texttt{--cov-fail-under=30}
+    \item 上传 Codecov 报告
+    \item 触发: push to main/dev, PR to main
+\end{itemize}
+
+\subsection{Pre-commit Hooks}
+
+\begin{lstlisting}[language=bash]
+pre-commit install
+# 每次 commit 触发: ruff + mypy
+\end{lstlisting}
+
+\newpage
+
+% ===================================================================
+\section{路线图与当前状态}
+
+\subsection{各阶段状态 (2026-04-28)}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{3cm}p{6.5cm}@{}}
+\toprule
+\textbf{阶段} & \textbf{状态} & \textbf{关键产出} \\
+\midrule
+Phase 0 & \textcolor{green}{DONE} & CI, LLM trace, 沙箱限额, Provider 抽象 \\
+Phase 0.5 & \textcolor{green}{DONE} & 3 个紧急 Bug 修复 (月牙误判、CODE\_EXAMPLE、软失败) \\
+Phase 1 & \textcolor{orange}{40\%} & 专家骨架就位，Critic/Dimension/DeepRep 核心能力待补齐，Benchmark 缺失 \\
+Phase 2 & \textcolor{red}{未启动} & Ensemble Consensus, 参数扫描, HITL 降级版 \\
+Phase 3 & \textcolor{red}{未启动} & DEC/IDEC, GPU 自适应 \\
+Phase 4 & \textcolor{red}{未启动} & RAG 单领域插件, 多模态 \\
+Phase 5 & \textcolor{red}{暂不启动} & ACE-as-a-Service \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Phase 1 待办清单 (优先级排序)}
+
+\begin{enumerate}[nosep]
+    \item Benchmark 套件: UCI 标准数据集 + 合成数据, 量化自愈成功率与结果质量
+    \item Critic Agent 职责明确: 定位为独立审计方，输出稳定性/重采样/CVI 指标
+    \item Dimension Expert: API 收敛 + 单测补齐
+    \item DeepRepresentation Expert: 确定性核心逻辑 + 单测
+    \item CI 覆盖率门槛从 30\% 提升至 60\%
+\end{enumerate}
+
+\newpage
+
+% ===================================================================
+\section{已知局限与注意事项}
+
+\subsection{自愈循环}
+
+\begin{itemize}[nosep]
+    \item $N_{max} = 3$ 是经验值，对复杂算法 (如自定义 PyTorch 训练) 可能不足
+    \item 修复依赖 LLM 能力: 低质量 traceback 可能导致修复失败循环
+    \item 无预算熔断: 极端情况下 Token 成本可膨胀至 $(N_{max}+1) \times |experts|$ 倍
+\end{itemize}
+
+\subsection{沙箱}
+
+\begin{itemize}[nosep]
+    \item 超时由 \texttt{threading.Event.wait()} 实现: worker 线程在 C 扩展中时不可中断
+    \item 内存监控基于 \texttt{psutil} 轮询 (每 0.5s), 瞬态峰值可能漏检
+    \item Windows 环境不支持 \texttt{resource} 模块, 故未限制 CPU 时间
+\end{itemize}
+
+\subsection{RAG 系统}
+
+\begin{itemize}[nosep]
+    \item \texttt{knowledge\_engine.py} 仅 102 行, 不支持多领域语料治理
+    \item 向量库为本地 ChromaDB 持久化, 多用户场景需独立部署
+\end{itemize}
+
+\subsection{多用户与安全}
+
+\begin{itemize}[nosep]
+    \item 无多用户/会话隔离: 当前仅限单机 Demo
+    \item 无 PII 扫描或数据脱敏: 企业场景需额外措施
+    \item \texttt{.env} 文件中的 API Key 需妥善管理, 不可提交至版本控制
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{附录}
+
+\subsection{A. 术语表}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{7cm}@{}}
+\toprule
+\textbf{术语} & \textbf{定义} \\
+\midrule
+ACE & Automated Clustering Expert \\
+Orchestrator & 全局编排器 (ACESupervisor), 负责调度与聚合 \\
+Worker / Expert & 领域专家 Agent, 执行特定聚类策略 \\
+Think-Act-Fix & 自愈循环: LLM 生成 $\rightarrow$ 沙箱执行 $\rightarrow$ 错误修复 \\
+Soft Failure & 代码运行成功 (exit 0) 但未产出有效 artifacts \\
+Sandbox & 受限 Python 命名空间, 配备资源限额 \\
+Artifacts & 专家代码产出的聚类结果, 格式为 \{algo\_name: \{labels, metrics, plot\_path\}\} \\
+NEW\_TASK & 需执行完整聚类实验的意图 \\
+FOLLOW\_UP & 纯文本问答/追问的意图 \\
+CODE\_EXAMPLE & 仅索要代码示例的意图 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{B. 项目参考}
+
+\begin{itemize}[nosep]
+    \item README 文件: \texttt{README.md} (权威路线图)
+    \item 学术参考论文: \texttt{docs/} 目录 (聚类算法综述、深度聚类综述、多视图聚类)
+    \item 知识库规则: \texttt{agent\_brain/taxonomy\_rules.md}, \texttt{algorithm\_limits.md}, \texttt{metric\_logic.json}
+    \item Agent 配置: \texttt{.claude/agents/ace-core-engineer.md}
+    \item CI 配置: \texttt{.github/workflows/ci.yml}
+\end{itemize}
+
+\subsection{C. 版本历史}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llp{8cm}@{}}
+\toprule
+\textbf{版本} & \textbf{日期} & \textbf{变更} \\
+\midrule
+1.0 & 2025-01 & 初版 (已删除) \\
+2.0 & 2026-04-28 & 重写: 基于代码实况审计, 移除虚假 DONE 声明, 对齐 PM Review 路线图 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \end{document}

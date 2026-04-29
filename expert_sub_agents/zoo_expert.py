@@ -15,12 +15,13 @@ _generate_code 是确定性的（不调用 LLM），直接构造完整可执行�
 
 DEPRECATED: 旧 run() 方法保留为向后兼容别名。
 """
+
 from __future__ import annotations
 
 import logging
 import warnings
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 from ACE_Agent.agent_core.schemas import AlgorithmRunResult, DatasetBundle
 from ACE_Agent.expert_sub_agents.base import BaseExpert
@@ -84,13 +85,12 @@ class ZooExpert(BaseExpert):
 
         # 序列化算法配置供代码使用
         import json as _json
+
         algo_configs_repr = _json.dumps(algo_configs, ensure_ascii=False)
 
         plot_uses_pca = n_features > 2
         pca_import_line = (
-            "from sklearn.decomposition import PCA as _PCA"
-            if plot_uses_pca
-            else "# 数据已是 2D，无需 PCA"
+            "from sklearn.decomposition import PCA as _PCA" if plot_uses_pca else "# 数据已是 2D，无需 PCA"
         )
         pca_transform_line = (
             "_X_2d = _PCA(n_components=2, random_state=42).fit_transform(_X_scaled)"
@@ -167,29 +167,29 @@ class ZooExpert(BaseExpert):
             '        metrics["score"] = 0.0',
             "        return metrics",
             "    try:",
-            "        metrics[\"silhouette\"] = float(silhouette_score(X, labels))",
+            '        metrics["silhouette"] = float(silhouette_score(X, labels))',
             "    except Exception:",
             '        metrics["silhouette"] = 0.0',
             "    try:",
-            "        metrics[\"calinski_harabasz\"] = float(calinski_harabasz_score(X, labels))",
+            '        metrics["calinski_harabasz"] = float(calinski_harabasz_score(X, labels))',
             "    except Exception:",
             '        metrics["calinski_harabasz"] = 0.0',
             "    try:",
-            "        metrics[\"davies_bouldin\"] = float(davies_bouldin_score(X, labels))",
+            '        metrics["davies_bouldin"] = float(davies_bouldin_score(X, labels))',
             "    except Exception:",
             '        metrics["davies_bouldin"] = float("inf")',
             "    if y is not None:",
             "        try:",
-            "            metrics[\"ari\"] = float(adjusted_rand_score(y, labels))",
-            "            metrics[\"nmi\"] = float(normalized_mutual_info_score(y, labels))",
+            '            metrics["ari"] = float(adjusted_rand_score(y, labels))',
+            '            metrics["nmi"] = float(normalized_mutual_info_score(y, labels))',
             "        except Exception:",
             "            pass",
             "    # Score priority: ARI (if ground truth) > Silhouette > CH fallback.",
             "    # ARI is unbiased w.r.t. cluster shape; silhouette misranks non-convex clusters.",
-            "    if \"ari\" in metrics:",
+            '    if "ari" in metrics:',
             '        metrics["score"] = metrics["ari"]',
             '        metrics["score_source"] = "ari"',
-            "    elif metrics[\"silhouette\"] > 0:",
+            '    elif metrics["silhouette"] > 0:',
             '        metrics["score"] = metrics["silhouette"]',
             '        metrics["score_source"] = "silhouette"',
             "    else:",
@@ -233,7 +233,7 @@ class ZooExpert(BaseExpert):
             '        if _name == "GaussianMixture":',
             '            _params = {k.replace("n_clusters", "n_components"): v for k, v in _params.items()}',
             "        _model = _Cls(**_params)",
-            "        if hasattr(_model, \"fit_predict\"):",
+            '        if hasattr(_model, "fit_predict"):',
             "            _labels = _model.fit_predict(_X_scaled)",
             "        else:",
             "            _labels = _model.fit(_X_scaled).predict(_X_scaled)",
@@ -244,7 +244,7 @@ class ZooExpert(BaseExpert):
             "    except Exception as _exc:",
             "        import logging as _log",
             '        _log.getLogger("zoo_expert").warning(f"{_name} 运行失败: {_exc}")',
-            "        artifacts[_name + \"_error\"] = {",
+            '        artifacts[_name + "_error"] = {',
             '            "labels": [], "metrics": {"score": 0.0, "error": str(_exc)},',
             '            "plot_path": ""}',
         ]
@@ -258,11 +258,11 @@ class ZooExpert(BaseExpert):
         self,
         dataset: DatasetBundle,
         output_dir: Path,
-        algorithm_names: Optional[List[str]] = None,
+        algorithm_names: list[str] | None = None,
         *,
-        settings: Optional[LLMSettings] = None,
+        settings: LLMSettings | None = None,
         prompt: str = "运行全量算法",
-    ) -> List[AlgorithmRunResult]:
+    ) -> list[AlgorithmRunResult]:
         """
         .. deprecated::
             请改用 execute_with_self_correction()。
@@ -275,5 +275,6 @@ class ZooExpert(BaseExpert):
         )
         if settings is None:
             from ACE_Agent.tools.llm_client import LLMSettings as _LS
+
             settings = _LS(enabled=False)
         return self.execute_with_self_correction(dataset, prompt, settings)

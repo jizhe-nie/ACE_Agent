@@ -22,6 +22,7 @@ Three real LLM-generated code failure modes are covered:
 Also verifies that innocuous dicts (e.g. ``config = {"seed": 42}``)
 are NOT misidentified as artifacts.
 """
+
 from __future__ import annotations
 
 import sys
@@ -85,10 +86,7 @@ def _X() -> np.ndarray:
 class TestSandboxRescue:
     def test_result_variable_still_rescued(self) -> None:
         """Backward compat: `result = {...}` rescue still works."""
-        code = (
-            "result = {'KMeans': {'labels': [0, 1, 0], "
-            "'metrics': {'score': 0.5}, 'plot_path': 'k.png'}}\n"
-        )
+        code = "result = {'KMeans': {'labels': [0, 1, 0], 'metrics': {'score': 0.5}, 'plot_path': 'k.png'}}\n"
         sbx = CoderSandbox()
         out = sbx.execute(code, _X())
         assert out["success"] is True
@@ -97,10 +95,7 @@ class TestSandboxRescue:
 
     def test_broad_scan_finds_artifacts_shaped_dict_with_any_name(self) -> None:
         """A dict named anything (not `artifacts`/`result`) should be rescued."""
-        code = (
-            "output = {'KMeans': {'labels': [0, 1, 2], "
-            "'metrics': {'score': 0.7}, 'plot_path': 'k.png'}}\n"
-        )
+        code = "output = {'KMeans': {'labels': [0, 1, 2], 'metrics': {'score': 0.7}, 'plot_path': 'k.png'}}\n"
         sbx = CoderSandbox()
         out = sbx.execute(code, _X())
         assert out["success"] is True
@@ -147,9 +142,7 @@ class TestSandboxRescue:
         """Code that defines a function writing to artifacts but never calls
         it should remain empty — there is nothing to rescue."""
         code = (
-            "def run():\n"
-            "    artifacts['KMeans'] = {'labels': [0], "
-            "'metrics': {'score': 0.1}, 'plot_path': 'k.png'}\n"
+            "def run():\n    artifacts['KMeans'] = {'labels': [0], 'metrics': {'score': 0.1}, 'plot_path': 'k.png'}\n"
         )
         sbx = CoderSandbox()
         out = sbx.execute(code, _X())
@@ -161,10 +154,7 @@ class TestSandboxRescue:
     def test_direct_artifacts_write_still_works(self) -> None:
         """Sanity: the normal happy path (writing directly to ``artifacts``)
         is untouched by the broadened rescue."""
-        code = (
-            "artifacts['KMeans'] = {'labels': [0, 1], "
-            "'metrics': {'score': 0.9}, 'plot_path': 'k.png'}\n"
-        )
+        code = "artifacts['KMeans'] = {'labels': [0, 1], 'metrics': {'score': 0.9}, 'plot_path': 'k.png'}\n"
         sbx = CoderSandbox()
         out = sbx.execute(code, _X())
         assert out["success"] is True

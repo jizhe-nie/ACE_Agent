@@ -10,4 +10,5 @@ loguru
 pytest
 scipy
 python-dotenv
+chromadb
 

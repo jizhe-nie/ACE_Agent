@@ -39,11 +39,11 @@ st.set_page_config(page_title="ACE Agent", layout="wide", initial_sidebar_state=
 # These mirror values in llm_client.py; keep in sync if pricing changes.
 # ---------------------------------------------------------------------------
 _COST_TABLE: dict[str, dict[str, float]] = {
-    "DeepSeek":  {"input": 0.00014, "output": 0.00028},
-    "DashScope": {"input": 0.0004,  "output": 0.0012},
-    "OpenAI":    {"input": 0.005,   "output": 0.015},
-    "Moonshot":  {"input": 0.001,   "output": 0.003},
-    "Gemini":    {"input": 0.00035, "output": 0.00105},
+    "DeepSeek": {"input": 0.00014, "output": 0.00028},
+    "DashScope": {"input": 0.0004, "output": 0.0012},
+    "OpenAI": {"input": 0.005, "output": 0.015},
+    "Moonshot": {"input": 0.001, "output": 0.003},
+    "Gemini": {"input": 0.00035, "output": 0.00105},
 }
 
 
@@ -179,11 +179,7 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
             model = st.selectbox(
                 "模型",
                 p_cfg["models"],
-                index=(
-                    0
-                    if ss.get("model") not in p_cfg["models"]
-                    else p_cfg["models"].index(ss.get("model"))
-                ),
+                index=(0 if ss.get("model") not in p_cfg["models"] else p_cfg["models"].index(ss.get("model"))),
                 key="primary_model_sel",
             )
 
@@ -196,11 +192,7 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
             fallback_p = st.selectbox(
                 "Fallback 供应商",
                 fallback_options,
-                index=(
-                    fallback_options.index(saved_fallback)
-                    if saved_fallback in fallback_options
-                    else 0
-                ),
+                index=(fallback_options.index(saved_fallback) if saved_fallback in fallback_options else 0),
                 key="fallback_provider_sel",
             )
             fallback_api_key = ""
@@ -225,13 +217,15 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
                 keys[active_p] = api_key
                 if fallback_p != "(disabled)":
                     keys[fallback_p] = fallback_api_key
-                ss.save({
-                    "active_provider": active_p,
-                    "api_keys": keys,
-                    "model": model,
-                    "fallback_provider": fallback_p,
-                    "fallback_model": fallback_model,
-                })
+                ss.save(
+                    {
+                        "active_provider": active_p,
+                        "api_keys": keys,
+                        "model": model,
+                        "fallback_provider": fallback_p,
+                        "fallback_model": fallback_model,
+                    }
+                )
                 st.rerun()
 
         st.divider()
@@ -256,17 +250,19 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
             col_d.metric("Completion Tokens", f"{trace_stats['completion_tokens']:,}")
 
             st.metric("Est. Cost (USD)", f"${est_cost:.4f}")
-            st.caption(
-                f"Prices: input ${provider_cost['input']}/1K, "
-                f"output ${provider_cost['output']}/1K ({active_p})"
-            )
+            st.caption(f"Prices: input ${provider_cost['input']}/1K, output ${provider_cost['output']}/1K ({active_p})")
 
             if st.button("Clear Trace Log", use_container_width=True):
                 if _TRACE_PATH.exists():
                     _TRACE_PATH.write_text("", encoding="utf-8")
                 # Reset session cost counters
-                for k in ["llm_call_count", "llm_retry_count", "llm_prompt_tokens",
-                          "llm_completion_tokens", "llm_cost_usd"]:
+                for k in [
+                    "llm_call_count",
+                    "llm_retry_count",
+                    "llm_prompt_tokens",
+                    "llm_completion_tokens",
+                    "llm_cost_usd",
+                ]:
                     st.session_state[k] = 0
                 st.rerun()
 
@@ -328,17 +324,13 @@ def main() -> None:
                 if uploaded_file:
                     import tempfile
 
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=Path(uploaded_file.name).suffix
-                    ) as tmp:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
                         tmp.write(uploaded_file.getvalue())
                         tmp_path = tmp.name
                     preview_ds = load_custom_dataset(tmp_path)
                     os.remove(tmp_path)
                 else:
-                    preview_ds = generate_dataset(
-                        ds_name, n_samples=sc, noise=noise, random_state=seed
-                    )
+                    preview_ds = generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
 
                 if preview_ds:
                     st.subheader(f"数据预览: {preview_ds.display_name}")
@@ -447,9 +439,7 @@ def _handle_prompt(
                     dataset = _cached_load_custom(uploaded_file.getvalue(), uploaded_file.name)
                 else:
                     inferred = infer_dataset_from_prompt(prompt)
-                    dataset = generate_dataset(
-                        inferred or ds_name, n_samples=sc, noise=noise, random_state=seed
-                    )
+                    dataset = generate_dataset(inferred or ds_name, n_samples=sc, noise=noise, random_state=seed)
 
             st.write("正在激活专家 Agent 并监控自愈执行...")
             report = supervisor.run(
@@ -465,12 +455,14 @@ def _handle_prompt(
         if report.response_type == "CLUSTER_TASK":
             _render_report(report)
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": report.llm_summary or report.executive_summary,
-        "thought": thought,
-        "report": report if report.response_type == "CLUSTER_TASK" else None,
-    })
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": report.llm_summary or report.executive_summary,
+            "thought": thought,
+            "report": report if report.response_type == "CLUSTER_TASK" else None,
+        }
+    )
     st.session_state.session_manager.save_session(
         st.session_state.current_session_id,
         st.session_state.messages,
@@ -485,15 +477,11 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
     ranking = r.ranking if hasattr(r, "ranking") else r["ranking"]
     dataset = r.dataset if hasattr(r, "dataset") else r["dataset"]
     top = ranking[0]
-    ds_name_display = (
-        dataset.display_name if hasattr(dataset, "display_name") else dataset["display_name"]
-    )
+    ds_name_display = dataset.display_name if hasattr(dataset, "display_name") else dataset["display_name"]
     st.subheader(f"分析报告: {ds_name_display}")
     c = st.columns(4)
     algo_name = top.algorithm_name if hasattr(top, "algorithm_name") else top["algorithm_name"]
-    score = float(
-        top.metrics["score"] if hasattr(top, "metrics") else top["metrics"]["score"]
-    )
+    score = float(top.metrics["score"] if hasattr(top, "metrics") else top["metrics"]["score"])
     c[0].metric("优胜算法", algo_name)
     c[2].metric("评分", f"{score:.3f}")
     cols = st.columns(2)

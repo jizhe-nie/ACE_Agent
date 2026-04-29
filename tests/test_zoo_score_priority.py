@@ -11,6 +11,7 @@ Tests:
 1. test_score_equals_ari_when_labels_provided: ARI is used; DBSCAN outranks KMeans.
 2. test_score_falls_back_to_silhouette_when_no_labels: silhouette fallback works.
 """
+
 from __future__ import annotations
 
 import sys
@@ -69,9 +70,7 @@ def test_score_equals_ari_when_labels_provided(
     """With y supplied, metrics['score'] must equal metrics['ari'] and
     score_source must be 'ari'. DBSCAN should outrank KMeans (the core bug)."""
     zoo = ZooExpert()
-    results = zoo.execute_with_self_correction(
-        moons_bundle_with_labels, "run all", offline_settings
-    )
+    results = zoo.execute_with_self_correction(moons_bundle_with_labels, "run all", offline_settings)
     assert results, "No results produced"
 
     dbscan = _by_name(results, "DBSCAN")
@@ -101,9 +100,7 @@ def test_score_falls_back_to_silhouette_when_no_labels(
 ) -> None:
     """Without y, score must equal silhouette and score_source must be 'silhouette'."""
     zoo = ZooExpert()
-    results = zoo.execute_with_self_correction(
-        moons_bundle_no_labels, "run all", offline_settings
-    )
+    results = zoo.execute_with_self_correction(moons_bundle_no_labels, "run all", offline_settings)
     assert results, "No results produced"
 
     for r in results:
@@ -112,16 +109,13 @@ def test_score_falls_back_to_silhouette_when_no_labels(
         src = r.metrics.get("score_source")
         # ARI must not be present when y is None
         assert "ari" not in r.metrics, (
-            f"{r.algorithm_name}: ari should not be computed when y is None "
-            f"(got metrics={r.metrics})"
+            f"{r.algorithm_name}: ari should not be computed when y is None (got metrics={r.metrics})"
         )
         # When silhouette > 0, score_source should be 'silhouette' and score==silhouette
         if sil > 0:
             assert src == "silhouette", (
-                f"{r.algorithm_name}: expected score_source='silhouette' "
-                f"(silhouette={sil}), got {src!r}"
+                f"{r.algorithm_name}: expected score_source='silhouette' (silhouette={sil}), got {src!r}"
             )
             assert r.metrics["score"] == pytest.approx(sil), (
-                f"{r.algorithm_name}: score ({r.metrics['score']}) "
-                f"should equal silhouette ({sil}) when no labels"
+                f"{r.algorithm_name}: score ({r.metrics['score']}) should equal silhouette ({sil}) when no labels"
             )

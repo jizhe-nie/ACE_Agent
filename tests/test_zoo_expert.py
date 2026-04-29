@@ -12,6 +12,7 @@ Coverage targets:
 - ZooExpert is a proper subclass of BaseExpert
 - Soft-failure path in base.py: success=True but empty artifacts triggers retry
 """
+
 from __future__ import annotations
 
 import sys
@@ -99,32 +100,24 @@ class TestZooExpertGenerateCode:
         code = zoo._generate_code(dummy_client, moons_bundle, "run all")
         assert "DBSCAN" in code
 
-    def test_code_contains_hdbscan_or_skip(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_code_contains_hdbscan_or_skip(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         dummy_client = MagicMock()
         code = zoo._generate_code(dummy_client, moons_bundle, "run all")
         # Either HDBSCAN is present OR there's a graceful skip comment
         assert "HDBSCAN" in code or "hdbscan" in code.lower()
 
-    def test_code_contains_artifacts_assignment(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_code_contains_artifacts_assignment(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         dummy_client = MagicMock()
         code = zoo._generate_code(dummy_client, moons_bundle, "run all")
         # Must write into artifacts dict
         assert "artifacts[" in code
 
-    def test_code_contains_score_field(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_code_contains_score_field(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         dummy_client = MagicMock()
         code = zoo._generate_code(dummy_client, moons_bundle, "run all")
         assert "score" in code
 
-    def test_code_syntactically_valid(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_code_syntactically_valid(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         """Generated code must compile without SyntaxError."""
         dummy_client = MagicMock()
         code = zoo._generate_code(dummy_client, moons_bundle, "run all")
@@ -133,9 +126,7 @@ class TestZooExpertGenerateCode:
     def test_high_dimensional_data_uses_pca(self, zoo: ZooExpert) -> None:
         """5D data should trigger PCA path in generated code."""
         X_5d = np.random.default_rng(0).normal(size=(100, 5))
-        bundle_5d = DatasetBundle(
-            name="hd", X=X_5d, y=None, metadata={"expected_clusters": 3}
-        )
+        bundle_5d = DatasetBundle(name="hd", X=X_5d, y=None, metadata={"expected_clusters": 3})
         dummy_client = MagicMock()
         code = zoo._generate_code(dummy_client, bundle_5d, "run all")
         # PCA降维逻辑应存在
@@ -174,8 +165,7 @@ class TestZooExpertExecution:
         score = metrics.get("score", 0.0)
         ari = metrics.get("ari", 0.0)
         assert score > 0.3 or ari > 0.9, (
-            f"DBSCAN score={score:.4f}, ARI={ari:.4f}: "
-            "expected score > 0.3 OR ARI > 0.9 on low-noise moons data"
+            f"DBSCAN score={score:.4f}, ARI={ari:.4f}: expected score > 0.3 OR ARI > 0.9 on low-noise moons data"
         )
 
     def test_results_have_required_metric_fields(
@@ -209,9 +199,7 @@ class TestZooExpertExecution:
 
 
 class TestZooExpertDeprecatedRun:
-    def test_run_emits_deprecation_warning(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_run_emits_deprecation_warning(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         """run() must emit DeprecationWarning."""
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -219,9 +207,7 @@ class TestZooExpertDeprecatedRun:
         dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(dep_warnings) >= 1
 
-    def test_run_returns_list(
-        self, zoo: ZooExpert, moons_bundle: DatasetBundle
-    ) -> None:
+    def test_run_returns_list(self, zoo: ZooExpert, moons_bundle: DatasetBundle) -> None:
         """Deprecated run() must return a list (possibly empty if no LLM)."""
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -235,9 +221,7 @@ class TestZooExpertDeprecatedRun:
 
 
 class TestSoftFailurePath:
-    def test_empty_artifacts_triggers_retry(
-        self, moons_bundle: DatasetBundle, offline_settings: LLMSettings
-    ) -> None:
+    def test_empty_artifacts_triggers_retry(self, moons_bundle: DatasetBundle, offline_settings: LLMSettings) -> None:
         """
         When sandbox returns success=True but empty artifacts, base.py must
         log a soft-failure message and attempt to retry (up to MAX_RETRIES).
@@ -247,19 +231,13 @@ class TestSoftFailurePath:
         # Patch sandbox to always return success=True, artifacts={}
         empty_result = {"success": True, "artifacts": {}, "error": None}
         with patch.object(zoo.sandbox, "execute", return_value=empty_result):
-            results = zoo.execute_with_self_correction(
-                moons_bundle, "run all", offline_settings
-            )
+            results = zoo.execute_with_self_correction(moons_bundle, "run all", offline_settings)
 
         # Results should be empty (all retries produced empty artifacts)
         assert results == []
         # Logs should mention the soft failure
-        soft_fail_logs = [
-            log for log in zoo.last_logs if "软失败" in log or "artifacts" in log
-        ]
-        assert len(soft_fail_logs) > 0, (
-            f"Expected soft-failure log entry. Got logs: {zoo.last_logs}"
-        )
+        soft_fail_logs = [log for log in zoo.last_logs if "软失败" in log or "artifacts" in log]
+        assert len(soft_fail_logs) > 0, f"Expected soft-failure log entry. Got logs: {zoo.last_logs}"
 
     def test_error_report_contains_expert_logs(self) -> None:
         """_error_report with expert_logs should embed log snippets in summary."""

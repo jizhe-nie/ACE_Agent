@@ -14,6 +14,7 @@ Providers implemented:
 
 Fallback events are logged to the LLM trace file (P0-3).
 """
+
 from __future__ import annotations
 
 import json
@@ -55,12 +56,7 @@ class LLMSettings:
 
     @property
     def is_configured(self) -> bool:
-        return (
-            self.enabled
-            and bool(self.base_url.strip())
-            and bool(self.api_key.strip())
-            and bool(self.model.strip())
-        )
+        return self.enabled and bool(self.base_url.strip()) and bool(self.api_key.strip()) and bool(self.model.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +298,11 @@ class UniversalLLMClient:
             should_fallback = (
                 self._fallback is not None
                 and self._fallback._settings.is_configured  # type: ignore[attr-defined]
-                and (status_code in self._FALLBACK_STATUS_CODES or "timeout" in error_msg.lower() or "Timeout" in error_msg)
+                and (
+                    status_code in self._FALLBACK_STATUS_CODES
+                    or "timeout" in error_msg.lower()
+                    or "Timeout" in error_msg
+                )
             )
             if should_fallback:
                 fallback_triggered = True
