@@ -39,6 +39,7 @@ class ZooExpert(BaseExpert):
 
     def __init__(self) -> None:
         super().__init__("zoo", "全量算法专家")
+        self.REQUIRES_LLM = False
 
     # ------------------------------------------------------------------
     # BaseExpert 抽象方法实现

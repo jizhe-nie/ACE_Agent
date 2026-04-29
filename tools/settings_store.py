@@ -89,3 +89,25 @@ class SessionManager:
         self.path.write_text(json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8")
 
 from datetime import datetime
+
+
+def load_settings() -> dict:
+    """Return a flat LLM configuration dict, resolving the active provider.
+
+    Used by demo_runner and benchmark CLI to get the LLM config from
+    ``.ace_demo_config.json`` (populated by the Streamlit web UI).
+
+    Returns a dict with keys:
+        llm_enabled, llm_provider, llm_base_url, llm_api_key, llm_model
+    """
+    store = SettingsStore()
+    provider = store.get("active_provider", "DeepSeek")
+    api_keys = store.get("api_keys", {})
+    provider_cfg = DEFAULT_PROVIDERS.get(provider, {})
+    return {
+        "llm_enabled": store.get("llm_enabled", False),
+        "llm_provider": provider,
+        "llm_base_url": provider_cfg.get("base_url", ""),
+        "llm_api_key": api_keys.get(provider, ""),
+        "llm_model": store.get("model", ""),
+    }

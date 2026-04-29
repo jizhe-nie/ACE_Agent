@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 from ACE_Agent.agent_core.schemas import AlgorithmRunResult, DatasetBundle
 from ACE_Agent.tools.coder_sandbox import CoderSandbox, SandboxResourceExceeded
@@ -43,11 +44,16 @@ class BaseExpert(ABC):
     """Expert agent base class: supports Think -> Act -> Fix loop."""
 
     MAX_RETRIES: int = 3
+    # Pre-injected names exposed in the sandbox namespace alongside the core
+    # sklearn set.  Subclasses override this to make additional packages
+    # (umap, torch, …) available without import statements.
+    PRE_INJECT: dict[str, Any] = {}
 
     def __init__(self, key: str, label: str):
         self.key = key
         self.label = label
         self.sandbox = CoderSandbox()
+        self.REQUIRES_LLM: bool = True
 
     def execute_with_self_correction(
         self,
@@ -74,7 +80,14 @@ class BaseExpert(ABC):
         for attempt in range(1, self.MAX_RETRIES + 1):
             logs.append(f"[{self.label}] 第 {attempt} 次尝试运行代码...")
             try:
-                run_result = self.sandbox.execute(code, dataset.X, dataset.y)
+                run_result = self.sandbox.execute(
+                    code,
+                    dataset.X,
+                    dataset.y,
+                    pre_inject=self.PRE_INJECT or None,
+                    display_name=dataset.display_name,
+                    expected_clusters=dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3,
+                )
             except SandboxResourceExceeded as exc:
                 logs.append(f"[{self.label}] 沙箱资源超限 ({exc.reason}): {exc.detail}")
                 # Surface resource limit to caller; do not retry
@@ -120,6 +133,10 @@ class BaseExpert(ABC):
                         caller=f"{self.key}:fix:{attempt}",
                     )
                     diagnosis_hints = []
+                    if "artifacts =" in code or "artifacts=" in code:
+                        diagnosis_hints.append(
+                            "- 你的代码中包含 `artifacts = {}` 之类的赋值语句，这会**覆盖**沙箱注入的 artifacts 字典，导致结果丢失。请删除这行，直接对 artifacts 字典写入即可（如 `artifacts['algo'] = {...}`）。"
+                        )
                     if "if __name__" in code:
                         diagnosis_hints.append(
                             "- 你在代码里使用了 `if __name__ == \"__main__\":` 守卫，但沙箱环境下 __name__ != '__main__'，导致主逻辑从未执行。请删除该守卫，让代码在顶层直接运行。"

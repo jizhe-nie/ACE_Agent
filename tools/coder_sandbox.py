@@ -13,7 +13,11 @@ Configuration (environment variables or constructor kwargs):
   ACE_SANDBOX_TIMEOUT_SEC   : wall-clock timeout in seconds (default 60)
   ACE_SANDBOX_MEMORY_MB     : RSS memory ceiling in MiB (default 2048 = 2 GiB)
 
-The existing __import__ interception and Chinese font setup are preserved.
+Pre-injection (Phase 3):
+  Core sklearn types are pre-injected into every sandbox namespace so that
+  LLM-generated code need not import them.  A read-only DataContext object
+  (CTX_DATA) carries X, y and metadata to eliminate ``NameError: data is
+  not defined`` and similar variable-binding mistakes.
 """
 from __future__ import annotations
 
@@ -54,38 +58,154 @@ class SandboxResourceExceeded(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Data context (immutable) — carries X, y and metadata into the sandbox
+# ---------------------------------------------------------------------------
+class DataContext:
+    """Lightweight read-only bag injected as ``CTX_DATA`` into every sandbox.
+
+    LLM-generated code accesses the dataset through this context instead of
+    bare ``X`` / ``y`` global variables.  Repeated reassignment of an
+    attribute raises ``TypeError`` so that accidental shadowing (e.g.
+    ``CTX_DATA = ...`` by-name re-binding still works, but ``CTX_DATA.X = 42``
+    fails fast with a clear message.
+    """
+
+    __slots__ = ("X", "y", "n_samples", "n_features", "expected_clusters",
+                 "has_labels", "display_name")
+
+    def __init__(
+        self,
+        X: np.ndarray,
+        y: np.ndarray | None,
+        display_name: str = "",
+        expected_clusters: int = 3,
+    ):
+        object.__setattr__(self, "X", X)
+        object.__setattr__(self, "y", y)
+        object.__setattr__(self, "n_samples", X.shape[0])
+        object.__setattr__(self, "n_features", X.shape[1] if X.ndim == 2 else 1)
+        object.__setattr__(self, "expected_clusters", expected_clusters)
+        object.__setattr__(self, "has_labels", y is not None)
+        object.__setattr__(self, "display_name", display_name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise TypeError(
+            f"CTX_DATA is read-only.  Cannot set '{name}'."
+            f"  Use the skeleton variables or artifacts to store results."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"DataContext(n_samples={self.n_samples}, n_features={self.n_features},"
+            f" expected_clusters={self.expected_clusters}, has_labels={self.has_labels})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Core modules pre-injected into every sandbox so LLM code can use them
+# without import statements.  Additional expert-specific modules are merged
+# via the ``pre_inject`` kwarg of ``execute()``.
+# ---------------------------------------------------------------------------
+def _build_core_pre_inject() -> dict[str, Any]:
+    """Construct the pre-injection dict for core sklearn types.
+
+    These are available **without import** inside every sandbox execution.
+    """
+    modules: dict[str, Any] = {}
+    # --- pre-processing ---
+    try:
+        from sklearn.preprocessing import StandardScaler  # noqa: F811
+        modules["StandardScaler"] = StandardScaler
+    except Exception:
+        pass
+    # --- decomposition ---
+    try:
+        from sklearn.decomposition import PCA  # noqa: F811
+        modules["PCA"] = PCA
+    except Exception:
+        pass
+    # --- clustering ---
+    try:
+        from sklearn.cluster import KMeans  # noqa: F811
+        modules["KMeans"] = KMeans
+    except Exception:
+        pass
+    try:
+        from sklearn.mixture import GaussianMixture  # noqa: F811
+        modules["GaussianMixture"] = GaussianMixture
+    except Exception:
+        pass
+    # --- metrics ---
+    try:
+        from sklearn.metrics import (
+            silhouette_score,
+            calinski_harabasz_score,
+            davies_bouldin_score,
+        )
+        modules["silhouette_score"] = silhouette_score
+        modules["calinski_harabasz_score"] = calinski_harabasz_score
+        modules["davies_bouldin_score"] = davies_bouldin_score
+    except Exception:
+        pass
+    return modules
+
+CORE_PRE_INJECT: dict[str, Any] = _build_core_pre_inject()
+
+
+# ---------------------------------------------------------------------------
 # Allowed builtins
 # ---------------------------------------------------------------------------
 SAFE_BUILTINS: dict[str, Any] = {
     "__build_class__": __build_class__,
     "__import__": __import__,
+    # Standard exception hierarchy
+    "AttributeError": AttributeError,
+    "Exception": Exception,
+    "ImportError": ImportError,
+    "IndexError": IndexError,
+    "KeyError": KeyError,
+    "ModuleNotFoundError": ModuleNotFoundError,
+    "NameError": NameError,
+    "NotImplementedError": NotImplementedError,
+    "RuntimeError": RuntimeError,
+    "TypeError": TypeError,
+    "ValueError": ValueError,
+    # Builtin functions (safe — no I/O, no code execution)
     "abs": abs,
     "all": all,
     "any": any,
-    "Exception": Exception,
+    "bool": bool,
     "dict": dict,
     "dir": dir,
     "enumerate": enumerate,
+    "filter": filter,
     "float": float,
     "getattr": getattr,
     "globals": globals,
     "hasattr": hasattr,
     "int": int,
     "isinstance": isinstance,
+    "iter": iter,
     "len": len,
     "list": list,
     "locals": locals,
+    "map": map,
     "max": max,
     "min": min,
+    "next": next,
     "object": object,
+    "pow": pow,
     "print": print,
     "range": range,
+    "reversed": reversed,
     "round": round,
     "set": set,
+    "sorted": sorted,
     "str": str,
     "sum": sum,
     "super": super,
     "tuple": tuple,
+    "type": type,
     "vars": vars,
     "zip": zip,
 }
@@ -203,13 +323,46 @@ class CoderSandbox:
     # Public execute interface (used by expert agents)
     # ------------------------------------------------------------------
 
-    def execute(self, code: str, X: np.ndarray, y: np.ndarray | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        code: str,
+        X: np.ndarray,
+        y: np.ndarray | None = None,
+        *,
+        pre_inject: dict[str, Any] | None = None,
+        display_name: str = "",
+        expected_clusters: int = 3,
+    ) -> dict[str, Any]:
         """
-        Execute a code string with X/y injected into the namespace.
+        Execute a code string inside the sandbox namespace.
 
-        Returns a dict with keys: success (bool), artifacts (dict), error (str|None).
+        Parameters
+        ----------
+        code : str
+            Python source to execute.
+        X : np.ndarray
+            Feature matrix.
+        y : np.ndarray or None
+            Optional label / ground-truth vector (may be None).
+        pre_inject : dict or None
+            Expert-specific name→object mappings injected alongside the
+            core pre-injection set.  Takes precedence over CORE_PRE_INJECT
+            on key conflict.
+        display_name : str
+            Dataset display name exposed via ``CTX_DATA.display_name``.
+        expected_clusters : int
+            Expected number of clusters exposed via ``CTX_DATA.expected_clusters``.
+
+        Returns
+        -------
+        dict with keys: success (bool), artifacts (dict), error (str|None).
         Raises SandboxResourceExceeded if timeout or memory limit is breached.
         """
+        # Build pre-injection: expert overrides core
+        merged_pre: dict[str, Any] = dict(CORE_PRE_INJECT)
+        if pre_inject:
+            merged_pre.update(pre_inject)
+
         artifacts: dict[str, Any] = {}
         exec_env: dict[str, Any] = {
             "__builtins__": SAFE_BUILTINS,
@@ -218,6 +371,12 @@ class CoderSandbox:
             "y": y,
             "artifacts": artifacts,
             "np": np,
+            "CTX_DATA": DataContext(
+                X, y,
+                display_name=display_name,
+                expected_clusters=expected_clusters,
+            ),
+            **merged_pre,
         }
 
         try:
@@ -239,8 +398,13 @@ class CoderSandbox:
         try:
             self._run_with_limits(code, exec_env)
 
+            # Sync artifacts from exec_env in case the code re-assigned the
+            # name (e.g. ``artifacts = {}``). The exec_env binding is the
+            # authoritative one after execution.
+            artifacts = exec_env.get("artifacts", artifacts)
+
             if not artifacts:
-                # First: keep legacy rescue of "result" (most common)
+                # Keep legacy rescue of "result" (most common fallback)
                 if "result" in exec_env and _looks_like_artifacts(exec_env["result"]):
                     artifacts = exec_env["result"]
                 else:

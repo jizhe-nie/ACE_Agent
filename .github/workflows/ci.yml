@@ -70,3 +70,38 @@ jobs:
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
+
+  benchmark:
+    name: Benchmark Suite (offline)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run benchmark suite (offline, reduced samples for CI speed)
+        run: |
+          cd ..
+          python -m ACE_Agent.benchmark \
+            --offline \
+            --datasets blobs,moons,iris,wine,s_curve \
+            --n-samples 200 \
+            --output ACE_Agent/outputs/benchmark_ci.json
+        working-directory: ${{ github.workspace }}
+
+      - name: Archive benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: outputs/benchmark_ci.json
