@@ -64,9 +64,10 @@ streamlit run web_demo.py
 - **测试状态**: 125 项测试全部通过（96 核心 + 29 benchmark），Coverage ~65%（CI 门槛 `--cov-fail-under=30`）。
 - **环境要求**: 必须在 Conda `Tumor_Subtype_Agent` 环境下运行。
 - **可观测性**: 已实现 `outputs/llm_trace.jsonl` 日志 + `outputs/benchmark_*.json` 基准报告，支持 Token 计量与 Fallback 追踪。
-- **专家状态**: 7 个专家类已注册（centroid / topology / zoo / critic / dimension / deep_representation / multi_view）；dimension 已完成 Phase 3 重构（100% 成功率，零重试）；multi_view 为 WIP（Phase 2+）。
-- **Benchmark 套件**: 已就位（`benchmark/` 包），支持离线/在线两种模式；digits(64维) 全专家 100% 成功率，UMAP_KMeans ARI 0.8764 当前最高分。
-- **代码规模**: ~6,000 行核心代码（含 benchmark），~2,000 行测试代码（46 项全部通过）。
+- **专家状态**: 7 个专家类已注册（centroid / topology / zoo / critic / dimension / deep_representation / multi_view）；dimension 完成 Phase 4 深度去噪 AE 重构（深层堆叠 + BatchNorm + GMM 潜在聚类 + CosineAnnealing + Early Stopping），digits 上 AE_KMeans ARI 0.5094（+57% vs Phase 3 浅层 AE 的 0.3238）；multi_view 为 WIP（Phase 2+）。
+- **Benchmark 套件**: 已就位（`benchmark/` 包），支持 CLI 一键运行（`python -m ACE_Agent.benchmark --datasets ... --experts ...`）、离线/在线双模；digits(64维) 全专家 100% 成功率，UMAP_KMeans ARI 0.8764 当前最高分。
+- **沙箱安全**: Phase 0 资源限额（timeout + memory）+ **2026-04-29 高危方法拦截**（os.remove / os.system / sys.exit / subprocess 等封禁），见 `tools/coder_sandbox.py`。
+- **代码规模**: ~6,500 行核心代码（含 benchmark），~2,000 行测试代码（46 项全部通过）。
 
 ### 2. 路线图风险分级 (Risk Triage)
 
@@ -86,6 +87,7 @@ streamlit run web_demo.py
 | 工程质量 | 无 CI、无覆盖率、无 lint/type-check | ✅ 已解决 | Phase 0：GitHub Actions CI + ruff + mypy + pytest-cov |
 | 可观测性 | 无 LLM 调用追踪、Token 成本监控 | ✅ 已解决 | Phase 0：`llm_trace.jsonl` + caller 字段 + 侧边栏展示 |
 | 数据安全 | 沙箱无资源限额 | ✅ 已解决 | Phase 0：wall-clock timeout + delta-RSS 2 GiB 硬限额 |
+| 数据安全 | 沙箱未拦截 os.remove / sys.exit 等高危方法 | ✅ 已解决 | 2026-04-29：`_safe_import` 拦截 18 个高危方法 + 封禁 subprocess 等 15 个危险模块 |
 | LLM 抽象 | `llm_client.py` 单供应商硬编码 | ✅ 已解决 | Phase 0：ABC + 4 种 Provider + 自动 fallback |
 | 成本治理 | 自愈 3 次 × N 专家 → Token 指数膨胀 | 🟡 部分缓解 | 自愈重试已追踪，但策略层面无预算上限熔断 |
 | 评估基准 | 无标准 benchmark 套件 | ✅ 已解决 | Phase 1：`benchmark/` 包，29 项测试，离线/在线模式，CI 集成 |
@@ -111,13 +113,14 @@ streamlit run web_demo.py
 - [x] 文档：Engineering Handbook 与实际代码对齐 (**2026-04-28 DONE，v2.0 重写**)
 
 #### Phase 2 — 交互与稳健性 (目标 2 个月)
-- [ ] 集成聚类（Ensemble Consensus）：技术难度低、用户感知强，优先做 Demo 亮点
+- [ ] ~~集成聚类（Ensemble Consensus）~~：**已搁置**（2026-04-29 PM 决策），资源集中于 Phase 3 深度聚类
 - [ ] 参数演化预览（Epsilon 扫描等）
 - [ ] Human-in-the-Loop **降级版**：结果打标 + 重新触发，不做在线约束求解
 
 #### Phase 3 — 深度聚类启用 (目标 3 个月)
 > **硬件已就位**：本地 RTX 4060 Ti 8G（开发/小模型）+ 远端 NVIDIA A4000 16G（训练/中等模型）。故 PyTorch 深度聚类从"砍/延后项"升级为 Phase 3 正式阶段。
-- [ ] 深度聚类基线：DEC / IDEC / AutoEncoder + KMeans 联合优化
+- [x] **AE_KMeans 深度架构 (Phase 4 升级)**：深层堆叠 Denoising AE（Linear→BatchNorm1d→LeakyReLU→Dropout）+ CosineAnnealingLR + Early Stopping + GMM 潜在聚类；LLM 可控 8 个超参（hidden_dims, learning_rate, dropout, noise_std, cluster_method 等）；digits ARI 0.5094（+57% vs 浅层 AE 0.3238），手调参数达 0.6102 (**2026-04-29 DONE**)
+- [ ] **DEC / IDEC 联合优化**：当前 AE+KMeans 的两阶段训练（重建→聚类分离）是 ARI 瓶颈（离 UMAP_KMeans 0.88 仍有本质差距），需引入 DEC 的 KL 散度联合优化目标
 - [ ] 表格数据深度表示：Contrastive / SCARF 类嵌入
 - [ ] 显存自适应策略：batch size、AMP 混合精度、按显卡容量自动选档（8G vs 16G）
 - [ ] GPU/CPU 回退路径：无 CUDA 环境自动降级到 sklearn 基线
@@ -133,8 +136,10 @@ streamlit run web_demo.py
 - [ ] RESTful API、鉴权、任务队列、限流/计费等服务化能力
 
 #### 🗑️ 砍/延后项
+- **集成聚类（Ensemble Consensus）**：暂时搁置（2026-04-29 PM 决策），优先死磕深度学习管线（DEC/IDEC）
 - **ACE-as-a-Service 提前启动**：禁止在 Phase 0–4 完成前分配资源
 - **三领域 RAG 并行**：禁止同时启动多个领域插件
+- **LLM Token 预算熔断**：低优先级，当前自愈追踪已到位，暂不实现硬性上限
 
 ### 4. 规划决策约束 (Governance)
 

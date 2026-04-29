@@ -5,6 +5,8 @@ Safe Python execution sandbox for ACE Agent (Phase 0).
 
 Security features:
 - Restricted builtins (allowlist only)
+- Dangerous os/sys methods intercepted (os.remove, os.system, sys.exit, etc.)
+- High-risk modules blocked entirely (subprocess, socket, pickle, shutil, etc.)
 - Wall-clock timeout via threading.Timer
 - Memory upper bound monitored via psutil (Windows-compatible; no resource module needed)
 - SandboxResourceExceeded raised with typed reason string: "timeout" | "memory" | "cpu"
@@ -160,9 +162,72 @@ CORE_PRE_INJECT: dict[str, Any] = _build_core_pre_inject()
 # ---------------------------------------------------------------------------
 # Allowed builtins
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Safe import and module wrappers (sandbox hardening)
+# ---------------------------------------------------------------------------
+_DENIED_OS_ATTRS: set[str] = {
+    "chmod", "chown", "execv", "execve", "fork", "kill", "popen",
+    "remove", "removedirs", "rmdir", "spawnl", "spawnle", "system",
+    "unlink",
+}
+_DENIED_SYS_ATTRS: set[str] = {"exit", "_exit", "call_tracing", "setprofile", "settrace"}
+_BLOCKED_MODULES: set[str] = {
+    "ctypes", "ftplib", "http", "http.client", "http.server",
+    "imaplib", "multiprocessing", "pickle", "requests", "shutil",
+    "smtplib", "socket", "socketserver", "subprocess", "telnetlib",
+    "urllib", "urllib.request", "urllib.parse",
+}
+
+
+class _SafeModule:
+    """Proxy that wraps a module and denies access to dangerous attributes."""
+
+    def __init__(self, real_module: Any, denied: set[str]) -> None:
+        object.__setattr__(self, "_real", real_module)
+        object.__setattr__(self, "_denied", denied)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._denied:
+            modname = getattr(self._real, "__name__", "?")
+            raise PermissionError(
+                f"Sandbox: {modname}.{name} is blocked for security reasons"
+            )
+        return getattr(self._real, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+
+    def __dir__(self) -> list[str]:
+        return [x for x in dir(self._real) if x not in self._denied]
+
+
+def _safe_import(
+    name: str,
+    globals: Any = None,
+    locals: Any = None,
+    fromlist: tuple[str, ...] = (),
+    level: int = 0,
+) -> Any:
+    """Sandbox-aware ``__import__``.
+
+    - Entirely blocked modules raise ``ImportError``.
+    - ``os`` and ``sys`` are returned pre-wrapped with dangerous attributes
+      stripped.
+    - Everything else passes through to the real ``__import__``.
+    """
+    if name in _BLOCKED_MODULES:
+        raise ImportError(f"Module '{name}' is not allowed inside the sandbox")
+    module = __import__(name, globals, locals, fromlist, level)
+    if name == "os":
+        return _SafeModule(module, _DENIED_OS_ATTRS)
+    if name == "sys":
+        return _SafeModule(module, _DENIED_SYS_ATTRS)
+    return module
+
+
 SAFE_BUILTINS: dict[str, Any] = {
     "__build_class__": __build_class__,
-    "__import__": __import__,
+    "__import__": _safe_import,
     # Standard exception hierarchy
     "AttributeError": AttributeError,
     "Exception": Exception,
@@ -172,6 +237,7 @@ SAFE_BUILTINS: dict[str, Any] = {
     "ModuleNotFoundError": ModuleNotFoundError,
     "NameError": NameError,
     "NotImplementedError": NotImplementedError,
+    "PermissionError": PermissionError,
     "RuntimeError": RuntimeError,
     "TypeError": TypeError,
     "ValueError": ValueError,
