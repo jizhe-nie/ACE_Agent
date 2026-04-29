@@ -99,6 +99,33 @@ class BenchmarkReporter:
                     f"{ex.get('avg_latency_ms', 0) or 0:>7.0f}ms"
                     f" ${ex.get('total_cost_usd', 0) or 0.0:>7.4f}"
                 )
+
+        # Per-algorithm ranking (grouped by dataset, sorted by ARI desc)
+        results = report.results
+        if results:
+            datasets_order: list[str] = []
+            seen: set[str] = set()
+            for r in results:
+                if r.dataset not in seen:
+                    datasets_order.append(r.dataset)
+                    seen.add(r.dataset)
+
+            for ds_name in datasets_order:
+                ds_results = [
+                    r for r in results if r.dataset == ds_name and r.success
+                ]
+                ds_results.sort(key=lambda r: r.ari if r.ari == r.ari else -1.0, reverse=True)
+                print("-" * 72)
+                print(f"  [{ds_name}] per-algorithm ranking (by ARI desc)")
+                print(f"  {'Algorithm':<34} {'ARI':>8} {'Silhouette':>10} {'Score':>8} {'Expert':<14}")
+                print("  " + "-" * 70)
+                for r in ds_results:
+                    ari_str = f"{r.ari:.4f}" if r.ari == r.ari else "   N/A"
+                    sil_str = f"{r.silhouette:.4f}" if r.silhouette == r.silhouette else "     N/A"
+                    print(
+                        f"  {r.algorithm:<34} {ari_str:>8} {sil_str:>10} "
+                        f"{r.score:>8.4f} {r.expert_key:<14}"
+                    )
         print("=" * 72 + "\n")
 
     @staticmethod
