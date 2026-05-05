@@ -217,6 +217,16 @@ class BaseExpert(ABC):
             lines.append(f"- 禁止使用以下算法：{blocked}")
         if constraints.get("force_preprocessing"):
             lines.append(f"- 必须对数据应用 {constraints['force_preprocessing']} 预处理")
+        if constraints.get("reference_labels"):
+            ref_labels = constraints["reference_labels"]
+            n = len(ref_labels)
+            preview = ref_labels[:20] if n > 20 else ref_labels
+            lines.append(
+                f"- 用户提供了 {n} 个数据点的参考标签（HITL 人工标注）：{preview}"
+                f"{'...' if n > 20 else ''}。"
+                "你的聚类结果应尽量与参考标签一致，"
+                "可使用 Adjusted Rand Index (ARI) 或 Normalized Mutual Information (NMI) 作为对齐指标。"
+            )
         return "\n".join(lines) + "\n"
 
     def _fix_code(

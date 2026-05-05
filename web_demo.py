@@ -454,6 +454,7 @@ def _handle_prompt(
         st.markdown(report.llm_summary or report.executive_summary)
         if report.response_type == "CLUSTER_TASK":
             _render_report(report)
+            _render_hitl_panel(report, supervisor, dataset, prompt, settings)
 
     st.session_state.messages.append(
         {
@@ -573,6 +574,69 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
         cols[1].image(top_plot, caption="最优聚类结果")
     else:
         cols[1].info("该算法未生成聚类可视化图")
+
+
+def _render_hitl_panel(report, supervisor, dataset, prompt, settings) -> None:
+    """Render HITL label correction panel for Phase 2.3.
+
+    Shows the best result's cluster labels in an editable text area,
+    and a re-trigger button that re-dispatches experts with the
+    user-corrected labels as reference constraints.
+    """
+    ranking = report.ranking if hasattr(report, "ranking") else report.get("ranking", [])
+    if not ranking:
+        return
+
+    best = ranking[0]
+    labels = best.labels if hasattr(best, "labels") else best.get("labels")
+    if labels is None or len(labels) == 0:
+        return
+
+    algo_name = best.algorithm_name if hasattr(best, "algorithm_name") else best.get("algorithm_name", "")
+    n = len(labels)
+
+    with st.expander(f"🔧 人工标注修正 (HITL) — 当前最优: {algo_name} ({n} 个数据点)", expanded=False):
+        st.caption(
+            "修改下方标签后点击\"重新分析\"，系统将以你的标注为参考约束，"
+            "重新调度所有专家进行聚类。"
+        )
+
+        # Editable text area with comma-separated labels
+        default_text = ", ".join(str(int(lb)) for lb in labels)
+        corrected_text = st.text_area(
+            f"参考标签（{n} 个，逗号分隔，整数）",
+            value=default_text,
+            height=120,
+            key="hitl_label_editor",
+            help="修改你认为错误的标签值，保持逗号分隔格式。",
+        )
+
+        col1, col2 = st.columns([1, 3])
+        if col1.button("⚡ 以修正标签重新分析", type="primary", use_container_width=True):
+            try:
+                corrected_labels = [int(x.strip()) for x in corrected_text.split(",") if x.strip()]
+                if len(corrected_labels) != n:
+                    st.error(f"标签数量不匹配：期望 {n} 个，收到 {len(corrected_labels)} 个。请保持数据点数不变。")
+                    return
+            except ValueError:
+                st.error("标签格式错误：请确保所有标签都是整数（逗号分隔）。")
+                return
+
+            constraints = {"reference_labels": corrected_labels}
+            with st.status("HITL 约束重分析正在进行...", expanded=True) as hitl_status:
+                st.write("正在以人工标注为约束重新调度专家池...")
+                hitl_report = supervisor.run(
+                    dataset=dataset,
+                    user_prompt=prompt,
+                    llm_settings=settings,
+                    constraints=constraints,
+                )
+                hitl_status.update(label="HITL 重分析完成", state="complete", expanded=False)
+
+            st.markdown("---")
+            st.markdown(hitl_report.llm_summary or hitl_report.executive_summary)
+            if hitl_report.response_type == "CLUSTER_TASK":
+                _render_report(hitl_report)
 
 
 if __name__ == "__main__":

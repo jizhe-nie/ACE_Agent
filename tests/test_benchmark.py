@@ -1416,6 +1416,27 @@ class TestCritic20ClosedLoop:
         assert "MeanShift" in prompt
         assert "standardize" in prompt
 
+    def test_inject_constraints_prompt_reference_labels(self) -> None:
+        """reference_labels produces HITL annotation directive."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        prompt = BaseExpert._inject_constraints_prompt({
+            "reference_labels": [0, 1, 0, 2, 1],
+        })
+        assert "HITL" in prompt
+        assert "参考标签" in prompt
+        assert "[0, 1, 0, 2, 1]" in prompt
+        assert "ARI" in prompt or "NMI" in prompt
+
+    def test_inject_constraints_prompt_reference_labels_truncated(self) -> None:
+        """Long reference_labels (>20) should be truncated in prompt preview."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        labels = list(range(50))
+        prompt = BaseExpert._inject_constraints_prompt({
+            "reference_labels": labels,
+        })
+        assert "..." in prompt
+        assert "50 个数据点" in prompt
+
     def test_handle_audit_feedback_clear_or_warn_returns_empty(self) -> None:
         """CLEAR and WARN actions should return empty list (no retry needed)."""
         from ACE_Agent.agent_core.supervisor import ACESupervisor

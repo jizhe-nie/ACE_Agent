@@ -58,6 +58,7 @@ class ACESupervisor:
         user_prompt: str,
         llm_settings: LLMSettings,
         intent_data: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> SupervisorReport:
         """核心编排流程。"""
         # 1. 语义路由
@@ -76,6 +77,13 @@ class ACESupervisor:
             trace_msg = "【RAG】未在知识库中匹配到强相关的理论支持。"
 
         trace = [f"【主控】确认意图: {intent}", f"【逻辑】{reasoning}", trace_msg]
+
+        # HITL约束检测
+        if constraints and constraints.get("reference_labels"):
+            trace.append(
+                f"【HITL】检测到人工标注参考标签（{len(constraints['reference_labels'])} 个数据点），"
+                "将作为约束传递给各专家。"
+            )
 
         # 2. 意图分流
         if intent == "FOLLOW_UP":
@@ -99,7 +107,7 @@ class ACESupervisor:
             trace.append(f"【主控】检测到数据维度为 {n_features}，已自动激活维度专家。")
             active_experts.append("dimension")
 
-        return self._execute_full_analysis(dataset, user_prompt, llm_settings, trace, active_experts)
+        return self._execute_full_analysis(dataset, user_prompt, llm_settings, trace, active_experts, constraints=constraints)
 
     # ------------------------------------------------------------------
     # 完整分析流
@@ -112,6 +120,7 @@ class ACESupervisor:
         settings: LLMSettings,
         trace: list[str],
         active_experts: list[str],
+        constraints: dict[str, Any] | None = None,
     ) -> SupervisorReport:
         """执行完整的自动化聚类实验流。"""
         output_dir = self._prepare_output_dir(dataset.name)
@@ -124,7 +133,7 @@ class ACESupervisor:
                 trace.append(f"【主控】警告：专家 '{key}' 未在注册表中找到，跳过。")
                 continue
             try:
-                expert_results = expert.execute_with_self_correction(dataset, prompt, settings)
+                expert_results = expert.execute_with_self_correction(dataset, prompt, settings, constraints=constraints)
                 all_results.extend(expert_results)
                 trace.extend(expert.last_logs)
                 expert_logs[key] = list(expert.last_logs)

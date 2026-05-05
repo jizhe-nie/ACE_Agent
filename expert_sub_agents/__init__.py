@@ -2,10 +2,8 @@ import logging
 
 from ACE_Agent.expert_sub_agents.centroid_expert import CentroidExpert
 from ACE_Agent.expert_sub_agents.critic_expert import CriticExpert
-from ACE_Agent.expert_sub_agents.deep_representation import DeepRepresentationExpert
 from ACE_Agent.expert_sub_agents.dimension_expert import DimensionExpert
 from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
-from ACE_Agent.expert_sub_agents.multi_view_expert import MultiViewExpert
 from ACE_Agent.expert_sub_agents.topology_expert import TopologyExpert
 from ACE_Agent.expert_sub_agents.zoo_expert import ZooExpert
 
@@ -15,8 +13,12 @@ _logger = logging.getLogger(__name__)
 def build_expert_registry():
     """Build the full expert registry.
 
-    Active: centroid, topology, zoo, critic, dimension, ensemble.
-    WIP (Phase 2+): multi_view, deep_representation.
+    Active (6): centroid, topology, zoo, critic, dimension, ensemble.
+
+    Removed from registry (2026-05-04 cleanup):
+    - multi_view: old skeleton using legacy run() pattern, lacks _generate_code().
+    - deep_representation: thin LLM prompt wrapper, functionally overlapped by
+      dimension_expert's deep clustering pipelines (SelfLabel, AE_KMeans).
     """
     candidates = [
         CentroidExpert,
@@ -25,8 +27,6 @@ def build_expert_registry():
         CriticExpert,
         DimensionExpert,
         EnsembleConsensusExpert,
-        DeepRepresentationExpert,
-        MultiViewExpert,
     ]
     registry = {}
     for cls in candidates:

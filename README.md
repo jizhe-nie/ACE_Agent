@@ -60,14 +60,14 @@ streamlit run web_demo.py
 
 > **注意**：本章节为 ACE Agent 唯一权威路线图，替代此前所有版本。所有 Phase 状态均基于代码实况审计，而非历史声明。
 
-### 1. 现状基线 (Baseline Audit, 2026-05-04 Update)
-- **测试状态**: **175 项测试全部通过**（96 核心 + 79 benchmark），Coverage ~65%（CI 门槛 `--cov-fail-under=30`）。
+### 1. 现状基线 (Baseline Audit, 2026-05-05 Update)
+- **测试状态**: **230 项测试全部通过**（96 核心 + 87 benchmark + 47 系统集成），Coverage ~65%（CI 门槛 `--cov-fail-under=30`）。
 - **环境要求**: 必须在 Conda `Tumor_Subtype_Agent` 环境下运行。
 - **可观测性**: 已实现 `outputs/llm_trace.jsonl` 日志 + `outputs/benchmark_*.json` 基准报告，支持 Token 计量与 Fallback 追踪。
-- **专家状态**: 8 个专家类已注册（centroid / topology / zoo / critic / dimension / deep_representation / multi_view / ensemble）；**critic** 完成独立后验审计重构（audit_report + Web UI 审计卡片 + LaTeX 审计章节 + 条件触发集成机制）；**dimension** 完成 Conv-AE + SelfLabel 师生蒸馏管线，70K MNIST ARI **0.8454**；**ensemble** 完成 Co-association Matrix 共识融合 + 共现矩阵热力图可视化（Web UI）+ 条件触发门控（Critic endorsed 时自动跳过）；multi_view / deep_representation 为 WIP。
+- **专家状态**: 6 个活跃专家（centroid / topology / zoo / critic / dimension / ensemble）；**critic** 完成独立后验审计重构 + Critic 2.0 决策闭环（audit_report + RETRY 约束重试 + Web UI 审计卡片 + LaTeX 审计章节）；**dimension** 完成 Conv-AE + SelfLabel 师生蒸馏管线，70K MNIST ARI **0.8454**；**ensemble** 完成 Co-association Matrix 共识融合 + 共现矩阵热力图可视化（Web UI）+ 条件触发门控（Critic endorsed+confidence≥0.75 时跳过）；deep_representation 已实现但功能与 dimension 深度管线重叠，已从默认池移除；multi_view 为旧版骨架（缺 `_generate_code`），注册时自动跳过。
 - **Benchmark 套件**: 已就位（`benchmark/` 包），支持 CLI 一键运行（`python -m ACE_Agent.benchmark --datasets ... --experts ...`）、离线/在线双模；digits(64维) 全专家 100% 成功率，UMAP_KMeans ARI 0.8764 当前最高分；**70K MNIST SelfLabel ARI 0.8454 为深度管线最高分**。
 - **沙箱安全**: Phase 0 资源限额（timeout + memory）+ **2026-04-29 高危方法拦截**（os.remove / os.system / sys.exit / subprocess 等封禁），见 `tools/coder_sandbox.py`。
-- **代码规模**: ~7,000 行核心代码（含 benchmark），~2,500 行测试代码（175 项全部通过）。
+- **代码规模**: ~7,300 行核心代码（含 benchmark），~3,300 行测试代码（230 项全部通过，含 47 项系统集成测试）。
 
 ### 2. 路线图风险分级 (Risk Triage)
 
@@ -129,18 +129,21 @@ streamlit run web_demo.py
 - [x] **共现矩阵可视化**：Web UI 渲染 YlOrRd 热力图，展示专家共识矩阵（降采样 max 500×500）
 - [x] **条件触发门控**：Critic endorsed + confidence ≥ 0.75 时自动跳过 Ensemble，仅在置信度不足时触发融合拯救
 
-##### 2.2 Critic 2.0 决策闭环 — P1 (Week 3-4) 🟡 **IN PROGRESS (2026-05-04)**
+##### 2.2 Critic 2.0 决策闭环 — P1 (Week 3-4) ✅ **DONE (2026-05-05)**
 - [x] **条件触发门控（简化版）**：Critic endorsed + confidence ≥ 0.75 时跳过 Ensemble；qualified/warning 时触发
-- [ ] **完整 Critic 2.0 闭环**：
+- [x] **完整 Critic 2.0 闭环**：
   - `audit_report` 新增 `action: "CLEAR" | "WARN" | "RETRY"` 字段
   - `retry_constraints` 含 `force_k`, `blocked_algorithms`, `force_preprocessing`
-- [ ] Supervisor 新增 `_handle_audit_feedback()`：RETRY 时构造约束指令，重新调度专家池
-- [ ] `max_retries=2` 硬限制 + 每次重试扩大 timeout_margin
-- [ ] 约束传递协议：`BaseExpert._generate_code()` 链增加 `constraints: dict | None` 参数
-- [ ] Benchmark 测试 (~4 项)
+- [x] Supervisor 新增 `_handle_audit_feedback()`：RETRY 时构造约束指令，重新调度专家池
+- [x] `max_retries=2` 硬限制 + 每次重试扩大 timeout_margin
+- [x] 约束传递协议：`BaseExpert._generate_code()` 链增加 `constraints: dict | None` 参数（全部 7 个专家适配）
+- [x] Benchmark 测试：6 项 Critic 2.0 专项测试全部通过
 
-##### 2.3 Human-in-the-Loop 降级版
-- [ ] 结果打标 + 重新触发，不做在线约束求解
+##### 2.3 Human-in-the-Loop 降级版 ✅ **DONE (2026-05-05)**
+- [x] 结果打标：Web UI 新增 HITL 人工标注修正面板（`_render_hitl_panel`），支持标签编辑 + 格式校验
+- [x] 约束传递：`_inject_constraints_prompt` 扩展 `reference_labels` 约束类型，含截断预览 + ARI/NMI 对齐提示
+- [x] 重新触发：`supervisor.run()` 新增 `constraints` 参数，贯穿 `_execute_full_analysis` → `execute_with_self_correction`
+- [x] 不涉及在线约束求解（COP-KMeans 等），保持轻量
 
 #### Phase 3 — 深度聚类启用 (目标 3 个月)
 > **硬件已就位**：本地 RTX 4060 Ti 8G（开发/小模型）+ 远端 NVIDIA A4000 16G（训练/中等模型）。故 PyTorch 深度聚类从"砍/延后项"升级为 Phase 3 正式阶段。
@@ -154,17 +157,15 @@ streamlit run web_demo.py
 
 #### Phase 4 — 学科特化与扩展 (目标 4 个月+)
 
-##### 4.1 RAG 生信特化 — P1 (Week 5-6)
-- [ ] **DomainRouter**：按 `CTX_DATA.metadata.get("domain")` 路由到不同 ChromaDB collection
-- [ ] **`agent_brain/bioinfo_rules.md`**：结构化生信规则文件 (~200 行)
-  - 单细胞 RNA-seq：`log1p(CPM/10)` → `scanpy.pp.highly_variable_genes` → PCA(50) → KNN → Leiden
-  - 基因表达矩阵：低表达基因过滤, `Seurat::NormalizeData`
-  - 批次效应 (batch effect)：Harmony / ComBat / BBKNN 校正指南
-  - 已知 marker gene 语义检索提示
-- [ ] **RuleInjector**：加载 `.md` 规则，按关键词匹配注入 RAG context
-- [ ] 多 collection 管理：`self.collections = {"bioinfo": ..., "general": ...}`
-- [ ] `build_index.py` 预构建脚本
-- [ ] 路由误判时回退到 general 域 + 记录路由置信度
+##### 4.1 RAG 知识引擎升级 — P1 (Week 5-6)
+> **2026-05-04 决策**：经评估 Milvus/Qdrant/Dify 等方案后，决定**在现有 ChromaDB 基础上深度升级而非替换**。
+> 理由：Chromadb 已稳定集成（`knowledge_engine.py`），零运维嵌入式部署；核心痛点不在向量库本身，而在分块/元数据/混合检索缺失。
+- [ ] **A. 学术论文逻辑分块 (Logical Chunking)**：PDF 解析时用正则提取 Section Heading (`Abstract`, `Methodology`, `Results` 等)，存入每个 chunk 的 `metadata.section`。查询时 query analyzer 判断用户意图类别（理论/方法/实验），优先过滤 `where={"section": "methodology"}` 的内容。意图分析先用关键词规则（"如何选参"→methodology），后续可升级为微型 LLM 调用。
+- [ ] **B. 双模式检索 (Lightweight / High Quality)**：侧边栏开关控制。`lightweight`（默认）：BM25 + 向量 → RRF 融合 → top-3，延迟 ~50ms，CPU 友好。`high_quality`：BM25 + 向量 → RRF → top-10 → Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) 重排 → top-3，延迟 ~500ms，精度更高。
+- [ ] **C. 多 Collection 领域感知并行检索**：`ace_bioinfo` / `ace_general` / `ace_cv` 三 collection 并行查询，领域匹配的 collection 结果加权 2x，合并后按加权分数排序。bioinfo 命中低时 general 结果自动递补，不需要二次查询回退。
+- [ ] **元数据模型**：每条 chunk 带 `{domain, year, keywords, title, authors, section}`，支持 ChromaDB `where=` 过滤
+- [ ] **`build_index.py`**：离线预构建脚本（PDF→逻辑分块→嵌入→入库），支持 BibTeX/JSON 元数据 + 增量更新 + manifest 去重
+- [ ] 路由误判时记录路由置信度
 
 ##### 4.2 其他
 - [ ] **KIM (Knowledge Integration Mechanism)**：跨语言脚本集成机制，支持 LLM Agent 自主检索并调用外部 MATLAB / R 语言专业算法脚本（如 Bioconductor 生信包），通过子进程沙箱执行 + 跨语言数据序列化
