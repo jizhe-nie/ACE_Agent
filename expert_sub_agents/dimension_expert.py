@@ -44,7 +44,7 @@ _SKELETON = r"""# ===== ACE Dimension Expert Skeleton (Phase 3) =====
 import numpy as _np
 
 # ---- scale -------------------------------------------------------------
-_scaler = StandardScaler()
+_scaler = {SCALER_CLASS}()
 _X = _scaler.fit_transform(CTX_DATA.X)
 _n = CTX_DATA.n_samples
 _d = CTX_DATA.n_features
@@ -169,10 +169,11 @@ if _d4.get("active", True) and _TSNE_OK and _n <= 5000:
 
 # ========================================================================
 # PIPELINE 5: AutoEncoder + KMeans  (high-dim data, if torch is available)
+#            Uses Conv-AE for image data, MLP AE otherwise.
 # ========================================================================
 _AE_OK = False
 try:
-    from ACE_Agent.tools.ae_pipeline import ae_kmeans_pipeline as _ae_pipe
+    {AE_IMPORT}
     _AE_OK = True
 except Exception:
     pass
@@ -194,11 +195,86 @@ if _d5.get("active", True) and _AE_OK and _d > 32:
             hidden_dims=_hidden5, learning_rate=_lr5,
             dropout=_drop5, early_stopping_patience=_patience5,
             noise_std=_noise5, cluster_method=_cluster5,
+            normalize="{NORMALIZE}"{AE_EXTRA_ARGS},
         )
         artifacts["AE_KMeans"] = _result5
     except Exception as _e5:
         artifacts["AE_KMeans_error"] = {
             "labels": [], "metrics": {"score": 0.0, "error": str(_e5)}, "plot_path": ""}
+
+# ========================================================================
+# PIPELINE 6: DEC / IDEC 联合优化 (high-dim data, KL divergence fine-tune)
+#            Uses Conv-DEC for image data, MLP DEC otherwise.
+# ========================================================================
+_DEC_OK = False
+try:
+    {DEC_IMPORT}
+    _DEC_OK = True
+except Exception:
+    pass
+
+_d6 = _DECISIONS.get("pipelines", {}).get("dec", {})
+if _d6.get("active", True) and _DEC_OK and _d > 32:
+    _k6 = int(_d6.get("k", _k0))
+    _latent6 = int(_d6.get("latent_dim", min(8, max(2, _d // 4))))
+    _pretrain6 = int(_d6.get("pretrain_epochs", 100))
+    _finetune6 = int(_d6.get("finetune_epochs", 50))
+    _hidden6 = _d6.get("hidden_dims", None)
+    _lr6 = float(_d6.get("learning_rate", 1e-3))
+    _drop6 = float(_d6.get("dropout", 0.2))
+    _gamma6 = float(_d6.get("gamma", 0.1))
+    _noise6 = float(_d6.get("noise_std", 0.15))
+    try:
+        _result6 = _dec_pipe(
+            _X, k=_k6, latent_dim=_latent6,
+            hidden_dims=_hidden6,
+            pretrain_epochs=_pretrain6, finetune_epochs=_finetune6,
+            pretrain_lr=_lr6, dropout=_drop6,
+            gamma=_gamma6, noise_std=_noise6,
+            device="auto",
+            normalize="{NORMALIZE}"{DEC_EXTRA_ARGS},
+        )
+        artifacts["DEC"] = _result6
+    except Exception as _e6:
+        artifacts["DEC_error"] = {
+            "labels": [], "metrics": {"score": 0.0, "error": str(_e6)}, "plot_path": ""}
+
+# ========================================================================
+# PIPELINE 7: Conv-AE + SelfLabel teacher-student distillation (image data)
+#            Phase A: Conv-AE pretrain (ReflectionPad2d + Latent BN)
+#            Phase B: GMM pseudo-labels -> CE fine-tune Encoder (frozen Decoder)
+#            Production path for MNIST/Fashion-MNIST (ARI >= 0.84 on 70K).
+# ========================================================================
+_SL_OK = False
+try:
+    {SELFLABEL_IMPORT}
+    _SL_OK = True
+except Exception:
+    pass
+
+_d7 = _DECISIONS.get("pipelines", {}).get("selflabel", {})
+if _d7.get("active", True) and _SL_OK and _d > 32 and CTX_DATA.metadata.get("is_image"):
+    _k7 = int(_d7.get("k", _k0))
+    _latent7 = int(_d7.get("latent_dim", 32))
+    _ae_epochs7 = int(_d7.get("ae_epochs", 150))
+    _cluster_epochs7 = int(_d7.get("cluster_epochs", 30))
+    _n_iter7 = int(_d7.get("n_iterations", 3))
+    _drop7 = float(_d7.get("dropout", 0.2))
+    _contrastive7 = float(_d7.get("contrastive_weight", 0.1))
+    _bootstrap7 = _d7.get("bootstrap", True)
+    _augment7 = _d7.get("augment", True)
+    try:
+        _result7 = _sl_pipe(
+            _X, k=_k7, latent_dim=_latent7,
+            ae_epochs=_ae_epochs7, cluster_epochs=_cluster_epochs7,
+            n_iterations=_n_iter7, dropout=_drop7,
+            contrastive_weight=_contrastive7, bootstrap=_bootstrap7,
+            augment=_augment7, normalize="{NORMALIZE}",
+        )
+        artifacts["SelfLabel"] = _result7
+    except Exception as _e7:
+        artifacts["SelfLabel_error"] = {
+            "labels": [], "metrics": {"score": 0.0, "error": str(_e7)}, "plot_path": ""}
 """
 
 # ---------------------------------------------------------------------------
@@ -213,7 +289,16 @@ _DECISION_SYSTEM_PROMPT = (
     "2. `pca_gmm`      — PCA 降维后用 GaussianMixture (几乎总是激活)\n"
     "3. `umap_kmeans`  — UMAP 流形降维 + KMeans (需要 umap 库，代码自动检测)\n"
     "4. `tsne_kmeans`  — t-SNE 降维 + KMeans (仅 n<=5000 可用，代码自动限流)\n"
-    "5. `ae_kmeans`    — AutoEncoder 深度降维 + KMeans (仅 n_features>32 自动激活)\n\n"
+    "5. `ae_kmeans`    — AutoEncoder 深度降维 + KMeans (仅 n_features>32 自动激活)\n"
+    "   * 对于图像数据 (MNIST/Fashion-MNIST)，系统自动使用 Conv2d/ConvTranspose2d 架构\n"
+    "   * Conv-AE 结构: 3层卷积编码器(32→64→128 filters) + 对称解码器\n"
+    "6. `dec`          — DEC/IDEC KL散度联合优化 (仅 n_features>32 自动激活，n_samples需>200)\n"
+    "   * 对于图像数据，系统自动使用 Conv-DEC (Conv-AE 骨干 + KL 微调)\n"
+    "7. `selflabel`     — Conv-AE + GMM 师生自蒸馏 (仅图像数据, n_features>32 自动激活)\n"
+    "   * Phase A: Conv-AE 预训练 (ReflectionPad2d + Latent BN + Contrastive Loss)\n"
+    "   * Phase B: GMM 伪标签 → 冻结Decoder → Cross-Entropy 微调 Encoder\n"
+    "   * 这是图像数据的**首选生产路径**，ARI 稳定超过 0.84 (70K MNIST 验证)\n"
+    "   * 核心超参: latent_dim=32, ae_epochs=150, contrastive_weight=0.1, bootstrap=True\n\n"
     "## 决策指南\n"
     "- n_features <= 3: 降维意义不大，仅激活 pca_kmeans 和 pca_gmm\n"
     "- 4 <= n_features <= 32: 激活 PCA 管线 + UMAP (若可用)\n"
@@ -253,6 +338,43 @@ _DECISION_SYSTEM_PROMPT = (
     "  * GMM 能捕获非球形簇，多数情况下优于 KMeans\n"
     "  * 小数据集或简单聚类结构用 kmeans\n"
     "  * 默认推荐 gmm\n\n"
+    "## DEC / IDEC 联合优化调参指南（Phase 3 核心创新）\n"
+    "- DEC 在两阶段训练后通过 KL 散度联合优化编码器与聚类中心：\n"
+    "  Phase 1: AE 预训练（与 ae_kmeans 相同）\n"
+    "  Phase 2: 移除解码器 → KMeans 初始化聚类中心 → 联合微调\n"
+    "  * 软分配 Q: Student's t-distribution kernel (α=1)\n"
+    "  * 目标分布 P: Q²/f 归一化（锐化高置信度分配）\n"
+    "  * 损失: KL(P||Q)，IDEC 模式额外加 γ·MSE(重建) 保留局部结构\n"
+    "- **gamma 选择** (IDEC 重建权重，核心超参):\n"
+    "  * gamma=0.0: 纯 DEC（仅优化聚类，可能破坏局部结构）\n"
+    "  * gamma=0.05~0.1: 温和 IDEC（推荐默认，保留局部结构的同时优化聚类）\n"
+    "  * gamma=0.2~0.5: 强 IDEC（更重重建，适合预训练不充分时）\n"
+    "- **finetune_epochs 选择**: KL 微调轮次\n"
+    "  * 默认 50，大数据集（n_samples>2000）可增至 80~100\n"
+    "  * 收敛判断: label 变化率 < 0.1% 时自动停止\n"
+    "- **pretrain_epochs 选择**: 与 ae_kmeans 的 epochs 相同逻辑\n"
+    "- DEC 相比 AE_KMeans 的理论优势：\n"
+    "  * AE_KMeans: 重建 + 聚类分离 → 重建损失不优化可分性\n"
+    "  * DEC: KL 散度直接优化聚类可分性 → ARI 通常显著更高\n"
+    "  * IDEC: 保留重建约束防止嵌入空间坍塌\n"
+    "- 注意：DEC 需要 n_samples > 200 以确保稳定的软分配估计\n\n"
+    "## Conv-AE 图像专用架构 (系统根据 is_image 自动切换)\n"
+    "- 当数据为图像时 (metadata.is_image=True)，AE/DEC 自动切换为 Conv2d 架构:\n"
+    "  * Encoder: Conv2d(1,32,3,s=2)→BN→ReLU (14×14) → Conv2d(32,64,3,s=2)→BN→ReLU (7×7)\n"
+    "    → Conv2d(64,128,3,s=2)→BN→ReLU (4×4) → Flatten→Linear(2048, latent_dim)\n"
+    "  * Decoder: Linear→Unflatten → ConvTranspose2d(128→64→32→1) + Sigmoid\n"
+    "  * 总参数量 ~150K，比 MLP AE (~2M) 更高效且能捕获空间结构\n"
+    "- **Conv-AE 专用超参**:\n"
+    "  * epochs: 建议 100~200 (默认 150)\n"
+    "  * latent_dim: 建议 32 (图像数据需要更大瓶颈保留结构)\n"
+    "  * dropout: 建议 0.1 (Dropout2d 轻正则)\n"
+    "  * noise_std: 建议 0.05~0.15 (默认 0.1)\n"
+    "  * cluster_method: 推荐 gmm (GMM 能更好捕获潜在空间的非球形簇)\n"
+    "- **Conv-DEC 专用超参**:\n"
+    "  * pretrain_epochs: Conv-AE 预训练轮次 (默认 150)\n"
+    "  * finetune_epochs: KL 微调轮次 (默认 400，大数据集可更短)\n"
+    "  * gamma: IDEC 重建权重 (默认 0.1)\n"
+    "  * hidden_dims: Conv-AE 不使用此参数 (网络深度由 3 层卷积固定)\n\n"
     "## JSON 格式\n"
     "{\n"
     '  "pipelines": {\n'
@@ -263,7 +385,16 @@ _DECISION_SYSTEM_PROMPT = (
     '    "ae_kmeans":   {"active": true, "latent_dim": <int>, "epochs": <int>, "k": <int>,\n'
     '                    "hidden_dims": [<int>, ...], "learning_rate": <float>,\n'
     '                    "dropout": <float>, "early_stopping_patience": <int>,\n'
-    '                    "noise_std": <float>, "cluster_method": "gmm"}\n'
+    '                    "noise_std": <float>, "cluster_method": "gmm"},\n'
+    '    "dec":         {"active": true, "latent_dim": <int>, "k": <int>,\n'
+    '                    "pretrain_epochs": <int>, "finetune_epochs": <int>,\n'
+    '                    "hidden_dims": [<int>, ...], "learning_rate": <float>,\n'
+    '                    "dropout": <float>, "gamma": <float>, "noise_std": <float>},\n'
+    '    "selflabel":   {"active": true, "latent_dim": 32, "k": <int>,\n'
+    '                    "ae_epochs": 150, "cluster_epochs": 30,\n'
+    '                    "n_iterations": 3, "dropout": 0.2,\n'
+    '                    "contrastive_weight": 0.1, "bootstrap": true,\n'
+    '                    "augment": true}\n'
     "  }\n"
     "}\n\n"
     "只输出 JSON。"
@@ -297,7 +428,9 @@ def _extract_json(text: str) -> dict[str, Any]:
     return {}
 
 
-def _build_smart_defaults(n_features: int, n_samples: int, k: int) -> dict[str, Any]:
+def _build_smart_defaults(
+    n_features: int, n_samples: int, k: int, is_image: bool = False
+) -> dict[str, Any]:
     """Build sensible defaults when LLM decision fails.
 
     AE hyper-parameters scale with dimensionality and dataset size:
@@ -312,32 +445,58 @@ def _build_smart_defaults(n_features: int, n_samples: int, k: int) -> dict[str, 
     small_dataset = n_samples < 500
     tiny_dataset = n_samples < 200
 
-    if n_features > 128:
+    # Non-image defaults (set first, overridden below for is_image)
+    ae_patience = 10 if small_dataset else 15
+    ae_noise = 0.35 if small_dataset else 0.15
+    ae_cluster = "gmm"
+    dec_gamma = 0.1
+
+    if is_image:
+        # Conv-AE defaults for image data
+        hidden_dims = None     # not used by Conv-AE
+        ae_epochs = 150
+        ae_lr = 1e-3
+        ae_dropout = 0.1
+        latent_dim = 32
+        ae_cluster = "gmm"
+        ae_noise = 0.1
+        ae_patience = 20
+        dec_finetune_epochs = 400
+        dec_pretrain_epochs = 150
+    elif n_features > 128:
         hidden_dims = [256, 128, 64, 32] if not tiny_dataset else [128, 64]
         ae_epochs = 200
         ae_lr = 5e-4
         ae_dropout = 0.3 if small_dataset else 0.2
+        latent_dim = min(12, max(2, n_features // 4))
+        dec_finetune_epochs = 200 if n_samples > 2000 else (80 if n_samples > 500 else 50)
+        dec_pretrain_epochs = ae_epochs
     elif n_features > 64:
         hidden_dims = [128, 64, 32] if not tiny_dataset else [64, 32]
         ae_epochs = 120
         ae_lr = 5e-4 if small_dataset else 1e-3
         ae_dropout = 0.3 if small_dataset else 0.2
+        latent_dim = min(12, max(2, n_features // 4))
+        dec_finetune_epochs = 200 if n_samples > 2000 else (80 if n_samples > 500 else 50)
+        dec_pretrain_epochs = ae_epochs
     elif n_features > 32:
         hidden_dims = [128, 64, 32] if not small_dataset else [64, 32]
         ae_epochs = 80
         ae_lr = 5e-4 if small_dataset else 1e-3
         ae_dropout = 0.3 if small_dataset else 0.2
+        latent_dim = min(12, max(2, n_features // 4))
+        dec_finetune_epochs = 200 if n_samples > 2000 else (80 if n_samples > 500 else 50)
+        dec_pretrain_epochs = ae_epochs
     else:
         hidden_dims = [64, 32]
         ae_epochs = 30
         ae_lr = 1e-3
         ae_dropout = 0.2
+        latent_dim = min(12, max(2, n_features // 4))
+        dec_finetune_epochs = 50
+        dec_pretrain_epochs = ae_epochs
 
-    ae_patience = 10 if small_dataset else 15
-    ae_noise = 0.35 if small_dataset else 0.15
-    ae_cluster = "gmm"
-
-    return {
+    result = {
         "pipelines": {
             "pca_kmeans": {"active": True, "n_components": n_comp, "k": k},
             "pca_gmm": {"active": True, "n_components": n_comp, "k": k},
@@ -360,8 +519,34 @@ def _build_smart_defaults(n_features: int, n_samples: int, k: int) -> dict[str, 
                 "noise_std": ae_noise,
                 "cluster_method": ae_cluster,
             },
+            "dec": {
+                "active": n_features > 32 and n_samples > 200,
+                "latent_dim": latent_dim,
+                "k": k,
+                "pretrain_epochs": dec_pretrain_epochs,
+                "finetune_epochs": dec_finetune_epochs,
+                "hidden_dims": hidden_dims,
+                "learning_rate": ae_lr,
+                "dropout": ae_dropout,
+                "gamma": dec_gamma,
+                "noise_std": ae_noise,
+            },
         }
     }
+    if is_image:
+        result["pipelines"]["selflabel"] = {
+            "active": n_features > 32,
+            "latent_dim": 32,
+            "k": k,
+            "ae_epochs": 150,
+            "cluster_epochs": 30,
+            "n_iterations": 3,
+            "dropout": 0.2,
+            "contrastive_weight": 0.1,
+            "bootstrap": True,
+            "augment": True,
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -379,27 +564,66 @@ class DimensionExpert(BaseExpert):
     def __init__(self) -> None:
         super().__init__("dimension", "维度专家")
         # Deferred import so this module can be loaded without torch.
+        pre_inject: dict[str, Any] = {}
         try:
             from ACE_Agent.tools.ae_pipeline import ae_kmeans_pipeline  # noqa: F811
 
-            self.PRE_INJECT = {"ae_kmeans_pipeline": ae_kmeans_pipeline}
+            pre_inject["ae_kmeans_pipeline"] = ae_kmeans_pipeline
         except Exception:
-            self.PRE_INJECT = {}
+            pass
+        try:
+            from ACE_Agent.tools.ae_pipeline import conv_ae_kmeans_pipeline  # noqa: F811
+
+            pre_inject["conv_ae_kmeans_pipeline"] = conv_ae_kmeans_pipeline
+        except Exception:
+            pass
+        try:
+            from ACE_Agent.tools.ae_pipeline import conv_selflabel_pipeline  # noqa: F811
+
+            pre_inject["conv_selflabel_pipeline"] = conv_selflabel_pipeline
+        except Exception:
+            pass
+        try:
+            from ACE_Agent.tools.dec_pipeline import dec_pipeline  # noqa: F811
+
+            pre_inject["dec_pipeline"] = dec_pipeline
+        except Exception:
+            pass
+        try:
+            from ACE_Agent.tools.dec_pipeline import conv_dec_pipeline  # noqa: F811
+
+            pre_inject["conv_dec_pipeline"] = conv_dec_pipeline
+        except Exception:
+            pass
+        self.PRE_INJECT = pre_inject
 
     def _generate_code(
         self,
         client: UniversalLLMClient,
         dataset: DatasetBundle,
         prompt: str,
+        constraints=None,
     ) -> str:
         n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
         n_samples = dataset.X.shape[0]
         k = dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3
 
+        # 0. Determine dataset type early
+        is_image = bool(dataset.metadata.get("is_image")) if dataset.metadata else False
+        original_shape = dataset.metadata.get("original_shape") if dataset.metadata else None
+
         # 1. Call LLM for pipeline decisions (JSON output)
         small_ds = n_samples < 500
         tiny_ds = n_samples < 200
-        if n_features > 128:
+        if is_image:
+            dim_category = "图像数据(Conv-AE)"
+            img_h, img_w = original_shape if original_shape else (28, 28)
+            ae_hint = (
+                f"Conv-AE架构: 3层Conv2d(32→64→128), input={img_h}×{img_w}, "
+                f"epochs=100~200, lr=1e-3, latent_dim=32, dropout=0.1, "
+                f"noise_std=0.05~0.15, cluster=gmm. hidden_dims 不使用(由卷积结构固定)."
+            )
+        elif n_features > 128:
             dim_category = "超高维"
             ae_hint = (
                 ("hidden_dims=[256,128,64,32]" if not tiny_ds else "hidden_dims=[128,64]")
@@ -428,15 +652,68 @@ class DimensionExpert(BaseExpert):
         )
         raw = client.chat_completion(
             [{"role": "user", "content": user_msg}],
-            _DECISION_SYSTEM_PROMPT,
+            self._inject_constraints_prompt(constraints) + _DECISION_SYSTEM_PROMPT,
         ).strip()
 
         # 2. Parse decision (or use smart defaults on failure)
         decisions = _extract_json(raw)
         if not decisions or "pipelines" not in decisions:
-            decisions = _build_smart_defaults(n_features, n_samples, k)
+            decisions = _build_smart_defaults(n_features, n_samples, k, is_image)
 
-        # 3. Inject decision JSON into skeleton (convert JSON bool/null to Python)
+        # 3. Determine scaler class based on dataset type
+        scaler_class = "MinMaxScaler" if is_image else "StandardScaler"
+        normalize = "minmax" if is_image else "standard"
+
+        # Conv-AE vs MLP AE backend selection
+        selflabel_import = ""
+        selflabel_extra = ""
+
+        if is_image and original_shape and len(original_shape) == 2:
+            img_h, img_w = original_shape
+            input_size = img_h  # square image assumed
+            ae_import = "from ACE_Agent.tools.ae_pipeline import conv_ae_kmeans_pipeline as _ae_pipe"
+            dec_import = "from ACE_Agent.tools.dec_pipeline import conv_dec_pipeline as _dec_pipe"
+            selflabel_import = "from ACE_Agent.tools.ae_pipeline import conv_selflabel_pipeline as _sl_pipe"
+            ae_extra = ", input_size=%d, base_filters=32" % input_size
+            dec_extra = ", input_size=%d, base_filters=32" % input_size
+            # Update decisions with conv-specific defaults
+            for key in ("ae_kmeans", "dec", "selflabel"):
+                pipe = decisions.setdefault("pipelines", {}).setdefault(key, {})
+                pipe.setdefault("latent_dim", 32)
+                pipe.setdefault("dropout", 0.2)
+                pipe.setdefault("noise_std", 0.1)
+                if key == "ae_kmeans":
+                    pipe.setdefault("epochs", 150)
+                    pipe.setdefault("cluster_method", "gmm")
+                    pipe.setdefault("batch_size", 128)
+                elif key == "dec":
+                    pipe.setdefault("pretrain_epochs", 150)
+                    pipe.setdefault("finetune_epochs", 400)
+                    pipe.setdefault("gamma", 0.1)
+                    pipe.setdefault("batch_size", 128)
+                else:
+                    pipe.setdefault("ae_epochs", 150)
+                    pipe.setdefault("cluster_epochs", 30)
+                    pipe.setdefault("n_iterations", 3)
+                    pipe.setdefault("contrastive_weight", 0.1)
+                    pipe.setdefault("bootstrap", True)
+                    pipe.setdefault("augment", True)
+        else:
+            ae_import = "from ACE_Agent.tools.ae_pipeline import ae_kmeans_pipeline as _ae_pipe"
+            dec_import = "from ACE_Agent.tools.dec_pipeline import dec_pipeline as _dec_pipe"
+            ae_extra = ""
+            dec_extra = ""
+
+        # 4. Inject decision JSON into skeleton (convert JSON bool/null to Python)
         decisions_repr = json.dumps(decisions, ensure_ascii=False)
         decisions_repr = decisions_repr.replace("true", "True").replace("false", "False").replace("null", "None")
-        return _SKELETON.replace("{DECISIONS_JSON}", decisions_repr)
+        return (
+            _SKELETON.replace("{DECISIONS_JSON}", decisions_repr)
+            .replace("{SCALER_CLASS}", scaler_class)
+            .replace("{NORMALIZE}", normalize)
+            .replace("{AE_IMPORT}", ae_import)
+            .replace("{DEC_IMPORT}", dec_import)
+            .replace("{SELFLABEL_IMPORT}", selflabel_import)
+            .replace("{AE_EXTRA_ARGS}", ae_extra)
+            .replace("{DEC_EXTRA_ARGS}", dec_extra)
+        )

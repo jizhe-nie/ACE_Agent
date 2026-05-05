@@ -11,8 +11,9 @@ class CentroidExpert(BaseExpert):
     def __init__(self):
         super().__init__(key="centroid", label="质心专家")
 
-    def _generate_code(self, client: UniversalLLMClient, dataset: DatasetBundle, prompt: str) -> str:
-        system_prompt = (
+    def _generate_code(self, client: UniversalLLMClient, dataset: DatasetBundle, prompt: str, constraints=None) -> str:
+        constraint_prompt = self._inject_constraints_prompt(constraints)
+        system_prompt = constraint_prompt + (
             "你是一个 Python 聚类专家（质心算法分支）。\n"
             "⚠️ 代码结构强约束（违反即视为失败）：\n"
             '- 代码必须在**顶层直接执行**，禁止用 `if __name__ == "__main__":` 包裹主逻辑。\n'

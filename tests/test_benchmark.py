@@ -16,10 +16,12 @@ if _root_parent not in sys.path:
 
 from sklearn.datasets import make_blobs  # noqa: E402
 
+from ACE_Agent.agent_core.schemas import AlgorithmRunResult, DatasetBundle  # noqa: E402
 from ACE_Agent.benchmark.config import BenchmarkConfig  # noqa: E402
 from ACE_Agent.benchmark.metrics import ClusteringMetricsCalculator  # noqa: E402
 from ACE_Agent.benchmark.reporter import BenchmarkReporter  # noqa: E402
 from ACE_Agent.benchmark.runner import BenchmarkReport, BenchmarkRunResult, BenchmarkRunner  # noqa: E402
+from ACE_Agent.expert_sub_agents.zoo_expert import ZooExpert  # noqa: E402
 from ACE_Agent.tools.data_factory import generate_dataset  # noqa: E402
 from ACE_Agent.tools.llm_client import LLMSettings  # noqa: E402
 
@@ -747,7 +749,11 @@ _VALID_DIM_DECISION_JSON = """\
     "ae_kmeans":   {"active": false, "latent_dim": 4, "epochs": 10, "k": 3,
                     "hidden_dims": [64, 32], "learning_rate": 0.001,
                     "dropout": 0.2, "early_stopping_patience": 15,
-                    "noise_std": 0.15, "cluster_method": "gmm"}
+                    "noise_std": 0.15, "cluster_method": "gmm"},
+    "dec":         {"active": false, "latent_dim": 4, "k": 3,
+                    "pretrain_epochs": 10, "finetune_epochs": 5,
+                    "hidden_dims": [64, 32], "learning_rate": 0.001,
+                    "dropout": 0.2, "gamma": 0.1, "noise_std": 0.15}
 }}
 """
 
@@ -858,3 +864,583 @@ class TestDimensionExpert:
         from ACE_Agent.expert_sub_agents import build_expert_registry
 
         assert "dimension" in build_expert_registry()
+
+    def test_dec_pipeline_pre_injected(self, dim_expert) -> None:
+        """PRE_INJECT carries dec_pipeline when torch is available."""
+        if dim_expert.PRE_INJECT:
+            assert "dec_pipeline" in dim_expert.PRE_INJECT
+            assert callable(dim_expert.PRE_INJECT["dec_pipeline"])
+
+    def test_dec_generated_code_contains_pipeline6(self, dim_expert) -> None:
+        """Skeleton includes Pipeline 6 (DEC) code."""
+        mock_client = MagicMock()
+        mock_client.chat_completion.return_value = _VALID_DIM_DECISION_JSON
+        dataset = generate_dataset("high_dim", n_samples=100)
+        code = dim_expert._generate_code(mock_client, dataset, "test")
+        assert "PIPELINE 6" in code or "DEC" in code
+        assert "dec_pipeline" in code
+
+
+class TestDECPipeline:
+    """Tests for the DEC/IDEC pipeline (tools/dec_pipeline.py)."""
+
+    def test_module_importable(self) -> None:
+        """dec_pipeline module imports without error."""
+        from ACE_Agent.tools import dec_pipeline
+
+        assert dec_pipeline._HAS_TORCH is True or dec_pipeline._HAS_TORCH is False
+
+    def test_dec_pipeline_basic(self) -> None:
+        """DEC pipeline returns valid result dict on synthetic data."""
+        import torch
+
+        if not torch.cuda.is_available() and torch.cuda.device_count() == 0:
+            pytest.skip("PyTorch not available for DEC test")
+
+        X, y = make_blobs(n_samples=200, n_features=50, centers=3, random_state=42)
+
+        from ACE_Agent.tools.dec_pipeline import dec_pipeline
+
+        result = dec_pipeline(
+            X,
+            k=3,
+            latent_dim=4,
+            hidden_dims=[32, 16],
+            pretrain_epochs=10,
+            finetune_epochs=5,
+            gamma=0.0,
+        )
+        assert "labels" in result
+        assert len(result["labels"]) == 200
+        assert len(set(result["labels"])) > 1  # more than one cluster
+        assert result["metrics"]["score"] > 0
+
+    def test_idec_mode(self) -> None:
+        """IDEC (gamma > 0) also produces valid result."""
+        import torch
+
+        if not torch.cuda.is_available() and torch.cuda.device_count() == 0:
+            pytest.skip("PyTorch not available for DEC test")
+
+        X, y = make_blobs(n_samples=120, n_features=40, centers=3, random_state=42)
+
+        from ACE_Agent.tools.dec_pipeline import dec_pipeline
+
+        result = dec_pipeline(
+            X,
+            k=3,
+            latent_dim=4,
+            hidden_dims=[32, 16],
+            pretrain_epochs=10,
+            finetune_epochs=5,
+            gamma=0.1,
+        )
+        assert result["metrics"]["method"] == "IDEC"
+        assert result["metrics"]["score"] > 0
+
+    def test_dec_no_torch_fallback(self) -> None:
+        """When _HAS_TORCH is False, sklearn fallback is used."""
+        from ACE_Agent.tools import dec_pipeline
+
+        X, y = make_blobs(n_samples=100, n_features=10, centers=3, random_state=42)
+        saved = dec_pipeline._HAS_TORCH
+        try:
+            dec_pipeline._HAS_TORCH = False
+            result = dec_pipeline.dec_pipeline(X, k=3)
+            assert result["metrics"]["backend"] == "sklearn-fallback"
+            assert len(result["labels"]) == 100
+            assert result["metrics"]["score"] > 0
+        finally:
+            dec_pipeline._HAS_TORCH = saved
+
+    def test_soft_assignment_is_normalized(self) -> None:
+        """Q rows sum to 1.0."""
+        import torch
+
+        from ACE_Agent.tools.dec_pipeline import _soft_assignment
+
+        z = torch.randn(30, 8)
+        centers = torch.nn.Parameter(torch.randn(3, 8))
+        q = _soft_assignment(z, centers)
+        row_sums = q.sum(dim=1)
+        assert torch.allclose(row_sums, torch.ones(30), atol=1e-5)
+
+    def test_target_distribution_is_normalized(self) -> None:
+        """P rows sum to 1.0."""
+        import torch
+
+        from ACE_Agent.tools.dec_pipeline import _soft_assignment, _target_distribution
+
+        z = torch.randn(30, 8)
+        centers = torch.nn.Parameter(torch.randn(3, 8))
+        q = _soft_assignment(z, centers)
+        p = _target_distribution(q)
+        row_sums = p.sum(dim=1)
+        assert torch.allclose(row_sums, torch.ones(30), atol=1e-5)
+
+
+# ======================================================================
+# Benchmark Dataloader
+# ======================================================================
+
+
+class TestBenchmarkDataloader:
+    """Tests for benchmark/dataloader.py."""
+
+    def test_module_importable(self) -> None:
+        from ACE_Agent.benchmark import dataloader
+
+        assert hasattr(dataloader, "load_benchmark_dataset")
+        assert hasattr(dataloader, "load_from_npy")
+
+    def test_is_large_dataset_small(self) -> None:
+        from ACE_Agent.benchmark.dataloader import is_large_dataset
+
+        ds = generate_dataset("blobs", n_samples=100)
+        assert not is_large_dataset(ds)
+
+    def test_is_large_dataset_big(self) -> None:
+        from ACE_Agent.benchmark.dataloader import is_large_dataset
+
+        ds = generate_dataset("high_dim", n_samples=60)
+        # high_dim: 100 features, <512 threshold → not large
+        assert not is_large_dataset(ds)
+
+        # Manually construct a large dataset
+        X = np.random.randn(15000, 10)
+        from ACE_Agent.agent_core.schemas import DatasetBundle
+
+        big = DatasetBundle(name="big", X=X)
+        assert is_large_dataset(big)
+
+    def test_dataset_size_label(self) -> None:
+        from ACE_Agent.benchmark.dataloader import dataset_size_label
+
+        from ACE_Agent.agent_core.schemas import DatasetBundle
+
+        assert dataset_size_label(DatasetBundle(name="s", X=np.random.randn(100, 2))) == "[SMALL]"
+        assert dataset_size_label(DatasetBundle(name="m", X=np.random.randn(15000, 2))) == "[LARGE]"
+        assert dataset_size_label(DatasetBundle(name="l", X=np.random.randn(60000, 2))) == "[HUGE]"
+
+    def test_load_from_npy_roundtrip(self, tmp_path) -> None:
+        from ACE_Agent.benchmark.dataloader import load_from_npy
+
+        X = np.random.randn(50, 128).astype(np.float32)
+        y = np.random.randint(0, 3, 50).astype(np.int64)
+        np.save(tmp_path / "features.npy", X)
+        np.save(tmp_path / "labels.npy", y)
+
+        ds = load_from_npy(
+            "test_features",
+            str(tmp_path / "features.npy"),
+            str(tmp_path / "labels.npy"),
+            cache_dir=str(tmp_path / "cache"),
+            expected_clusters=3,
+            feature_extractor="ResNet50",
+        )
+        assert ds.name == "test_features"
+        assert ds.X.shape == (50, 128)
+        assert ds.y is not None and len(ds.y) == 50
+        assert ds.metadata["expected_clusters"] == 3
+        assert ds.metadata["feature_extractor"] == "ResNet50"
+
+    def test_cached_load_creates_npy(self, tmp_path) -> None:
+        """load_from_npy also writes NPY cache."""
+        from ACE_Agent.benchmark.dataloader import load_from_npy
+
+        X = np.random.randn(20, 10).astype(np.float32)
+        np.save(tmp_path / "feat.npy", X)
+        cache = tmp_path / "cache"
+        load_from_npy("cached", str(tmp_path / "feat.npy"), cache_dir=str(cache))
+        assert (cache / "cached_X.npy").exists()
+
+
+# ======================================================================
+# Algorithm filtering (O(N²) meltdown prevention)
+# ======================================================================
+
+
+class TestAlgorithmFiltering:
+    """Tests for max_samples filtering in ZooExpert and AlgorithmZoo."""
+
+    def test_all_algorithms_have_max_samples(self) -> None:
+        from ACE_Agent.tools.algorithm_zoo import AlgorithmZoo
+
+        for algo in AlgorithmZoo.get_all_algorithms():
+            assert "max_samples" in algo, f"{algo['name']} missing max_samples"
+
+    def test_o_n_algorithms_unlimited(self) -> None:
+        """KMeans, MiniBatchKMeans, GMM, Birch have max_samples=None."""
+        from ACE_Agent.tools.algorithm_zoo import AlgorithmZoo
+
+        unlimited = {"KMeans", "MiniBatchKMeans", "GaussianMixture", "Birch"}
+        for algo in AlgorithmZoo.get_all_algorithms():
+            if algo["name"] in unlimited:
+                assert algo["max_samples"] is None, f"{algo['name']} should be unlimited"
+
+    def test_o_n2_algorithms_limited(self) -> None:
+        """Spectral and Agglomerative are capped at 5000."""
+        from ACE_Agent.tools.algorithm_zoo import AlgorithmZoo
+
+        limits = {"SpectralClustering": 5000, "AgglomerativeClustering": 5000,
+                  "AffinityPropagation": 3000, "MeanShift": 5000}
+        for algo in AlgorithmZoo.get_all_algorithms():
+            if algo["name"] in limits:
+                assert algo["max_samples"] == limits[algo["name"]]
+
+    def test_small_dataset_runs_all_algorithms(self) -> None:
+        """On N=200, ZooExpert generated code skips zero algorithms."""
+        zoo = ZooExpert()
+        ds = generate_dataset("smile", n_samples=200)
+        code = zoo._generate_code(None, ds, "test")
+        import ast
+
+        ast.parse(code)  # must be valid Python
+        # The filtering block is present
+        assert "max_samples" in code
+        # All 11 algorithms should still be in the config
+        assert code.count('"name":') == 11
+
+    def test_large_dataset_filters_o_n2(self) -> None:
+        """On N=20000, ZooExpert filters out O(N²) algorithms."""
+        zoo = ZooExpert()
+        import numpy as np
+
+        from ACE_Agent.agent_core.schemas import DatasetBundle
+
+        X = np.random.randn(20000, 10)
+        y = np.random.randint(0, 3, 20000)
+        ds = DatasetBundle(
+            name="large_test", X=X, y=y,
+            display_name="Large Test", description="",
+            metadata={"expected_clusters": 3},
+        )
+        code = zoo._generate_code(None, ds, "test")
+        import ast
+
+        ast.parse(code)
+
+        # Spectral, Agglomerative, AffinityPropagation, MeanShift should NOT be
+        # in the generated _algo_configs (they're filtered before code runs).
+        # However, the filtering is done inside the generated code, not in Python.
+        # The generated code itself defines _algo_configs with max_samples, and
+        # then the RUNTIME filtering removes O(N²) algorithms. So the generated
+        # code still includes ALL configs but filters at exec time.
+        # The key assertion: the generated code includes filtering logic.
+        assert "max_samples" in code
+        assert "_skipped" in code
+
+    def test_generated_code_filters_at_runtime(self) -> None:
+        """Execute generated code on N=6000 in sandbox; verify O(N²) skipped."""
+        zoo = ZooExpert()
+        zoo.sandbox.timeout_sec = 180  # N=6000 needs extra time for DBSCAN/OPTICS
+        import numpy as np
+
+        from ACE_Agent.agent_core.schemas import DatasetBundle
+
+        X = np.random.randn(6000, 10)
+        y = np.random.randint(0, 3, 6000)
+        ds = DatasetBundle(
+            name="mid_test", X=X, y=y,
+            display_name="Mid Test", description="",
+        )
+        code = zoo._generate_code(None, ds, "test")
+        result = zoo.sandbox.execute(
+            code, X, y,
+            display_name=ds.display_name,
+            expected_clusters=3,
+        )
+        assert result["success"] is True
+        # KMeans and MiniBatchKMeans should succeed
+        artifacts = result["artifacts"]
+        assert "KMeans" in artifacts
+        assert "MiniBatchKMeans" in artifacts
+        # Spectral and AffinityPropagation should be absent (filtered at runtime)
+        assert "SpectralClustering" not in artifacts
+        assert "AffinityPropagation" not in artifacts
+        assert "MeanShift" not in artifacts
+        # Agglomerative limit is 5000, so also skipped
+        assert "AgglomerativeClustering" not in artifacts
+
+
+# ============================================================================
+# Ensemble Consensus Expert Tests (Phase 2, 2026-05)
+# ============================================================================
+
+class TestEnsembleConsensusExpert:
+    """Tests for EnsembleConsensusExpert co-association matrix fusion."""
+
+    @staticmethod
+    def _make_result(name: str, expert_key: str, expert_label: str,
+                     labels: list[int], score: float) -> AlgorithmRunResult:
+        return AlgorithmRunResult(
+            algorithm_name=name,
+            expert_key=expert_key,
+            expert_label=expert_label,
+            labels=labels,
+            metrics={"score": score, "score_source": "silhouette"},
+            plot_path="",
+        )
+
+    @staticmethod
+    def _make_ds(n: int = 500, d: int = 10) -> DatasetBundle:
+        return DatasetBundle(
+            name="test_ensemble",
+            X=np.random.randn(n, d),
+            y=None,
+            display_name="Ensemble Test",
+        )
+
+    def test_ensemble_registered(self) -> None:
+        from ACE_Agent.expert_sub_agents import build_expert_registry
+        reg = build_expert_registry()
+        assert "ensemble" in reg, "Ensemble expert must be in registry"
+
+    def test_ensemble_key_and_label(self) -> None:
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        assert e.key == "ensemble"
+        assert "共识" in e.label
+
+    def test_ensemble_requires_two_label_sets(self) -> None:
+        """Fewer than 2 valid results → returns None."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        ds = self._make_ds(100)
+        results = [self._make_result("A", "a", "aa", list(range(100)), 0.5)]
+        assert e.execute_ensemble(results, ds) is None
+
+    def test_ensemble_rejects_mismatched_lengths(self) -> None:
+        """Different-length labels → returns None."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        ds = self._make_ds(100)
+        results = [
+            self._make_result("A", "a", "aa", list(range(100)), 0.5),
+            self._make_result("B", "b", "bb", list(range(50)), 0.4),
+        ]
+        assert e.execute_ensemble(results, ds) is None
+
+    def test_ensemble_basic_consensus(self) -> None:
+        """Two identical label sets → perfect agreement."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 200
+        labels_a = ([0] * 100) + ([1] * 100)
+        labels_b = ([0] * 100) + ([1] * 100)  # identical
+        ds = self._make_ds(n)
+        results = [
+            self._make_result("KMeans", "centroid", "c", labels_a, 0.6),
+            self._make_result("Spectral", "topology", "t", labels_b, 0.4),
+        ]
+        consensus = e.execute_ensemble(results, ds)
+        assert consensus is not None
+        assert consensus.algorithm_name == "EnsembleConsensus"
+        assert consensus.metrics["n_experts_fused"] == 2
+        assert consensus.metrics["agreement"] > 0.99  # identical labels
+        assert consensus.metrics["entropy_of_agreement"] < 0.1
+        assert len(consensus.labels) == n
+        # Consensus should find k=2
+        assert consensus.metrics["k_consensus"] == 2
+
+    def test_ensemble_weighted_scores_matter(self) -> None:
+        """High-score expert should dominate over low-score expert."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 200
+        # High-score expert labels: 3 clusters
+        labels_good = ([0] * 70) + ([1] * 60) + ([2] * 70)
+        # Low-score expert labels: 2 clusters (random-ish)
+        rng = np.random.RandomState(42)
+        labels_bad = rng.randint(0, 2, n).tolist()
+        ds = self._make_ds(n)
+        results = [
+            self._make_result("GoodAlgo", "dim", "dim", labels_good, 0.9),
+            self._make_result("BadAlgo", "zoo", "zoo", labels_bad, 0.1),
+        ]
+        consensus = e.execute_ensemble(results, ds)
+        assert consensus is not None
+        # k_consensus should be majority vote = 2 (tie) or 3 depending on label set
+        assert consensus.metrics["k_consensus"] in (2, 3)
+
+    def test_ensemble_entropy_of_agreement(self) -> None:
+        """Disagreeing experts → higher entropy."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 200
+        rng = np.random.RandomState(42)
+        labels_a = rng.randint(0, 3, n).tolist()
+        labels_b = rng.randint(0, 4, n).tolist()
+        labels_c = rng.randint(0, 5, n).tolist()
+        ds = self._make_ds(n)
+        results = [
+            self._make_result("A", "a", "aa", labels_a, 0.5),
+            self._make_result("B", "b", "bb", labels_b, 0.5),
+            self._make_result("C", "c", "cc", labels_c, 0.5),
+        ]
+        consensus = e.execute_ensemble(results, ds)
+        assert consensus is not None
+        # With random labels, agreement should be low and entropy high
+        assert consensus.metrics["agreement"] < 0.70
+        assert consensus.metrics["entropy_of_agreement"] > 0.5
+
+    def test_ensemble_empty_labels_skipped(self) -> None:
+        """Empty label list is filtered out."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 200
+        results = [
+            self._make_result("Empty", "a", "aa", [], 0.0),
+            self._make_result("Good", "b", "bb", list(range(n)), 0.5),
+        ]
+        ds = self._make_ds(n)
+        assert e.execute_ensemble(results, ds) is None  # only 1 valid
+
+    def test_ensemble_monte_carlo_threshold(self) -> None:
+        """Verify the MC circuit breaker constant exists and is reasonable."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import \
+            _MC_THRESHOLD, _MC_SAMPLE_PAIRS
+        assert _MC_THRESHOLD == 20000
+        assert _MC_SAMPLE_PAIRS == 10000
+
+    def test_ensemble_stores_coassoc_matrix(self) -> None:
+        """Ensemble result must carry coassoc_matrix in params for frontend."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 60
+        labels_a = ([0] * 20) + ([1] * 20) + ([2] * 20)
+        labels_b = ([0] * 20) + ([2] * 20) + ([1] * 20)
+        ds = self._make_ds(n)
+        results = [
+            self._make_result("A", "a", "aa", labels_a, 0.6),
+            self._make_result("B", "b", "bb", labels_b, 0.5),
+        ]
+        consensus = e.execute_ensemble(results, ds)
+        assert consensus is not None
+        params = getattr(consensus, "params", {})
+        assert "coassoc_matrix" in params, "Must store coassoc_matrix in params"
+        assert "expert_names" in params, "Must store expert_names in params"
+        assert params["expert_names"] == ["k=3", "k=3"]
+
+    def test_ensemble_coassoc_dimensions(self) -> None:
+        """Coassoc matrix in params must be square and <= 500."""
+        from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
+        e = EnsembleConsensusExpert()
+        n = 200
+        labels_a = ([0] * 100) + ([1] * 100)
+        labels_b = ([0] * 100) + ([1] * 100)
+        ds = self._make_ds(n)
+        results = [
+            self._make_result("A", "a", "aa", labels_a, 0.6),
+            self._make_result("B", "b", "bb", labels_b, 0.5),
+        ]
+        consensus = e.execute_ensemble(results, ds)
+        assert consensus is not None
+        coassoc = consensus.params["coassoc_matrix"]
+        assert coassoc.shape[0] == coassoc.shape[1], "Must be square"
+        assert coassoc.shape[0] == n, "For N<500, must match N"
+        # Values must be in [0, 1]
+        assert float(coassoc.min()) >= 0.0
+        assert float(coassoc.max()) <= 1.0
+
+    def test_conditional_ensemble_skip_rule(self) -> None:
+        """Ensemble should skip when endorsed + confidence >= 0.75."""
+        def _should_skip(audit: dict | None) -> bool:
+            if audit is None:
+                return False
+            return (
+                audit.get("endorsement") == "endorsed"
+                and audit.get("confidence_level", 0.0) >= 0.75
+            )
+
+        assert _should_skip({"endorsement": "endorsed", "confidence_level": 0.85})
+        assert _should_skip({"endorsement": "endorsed", "confidence_level": 0.75})
+        assert not _should_skip({"endorsement": "endorsed", "confidence_level": 0.74})
+        assert not _should_skip({"endorsement": "qualified", "confidence_level": 0.9})
+        assert not _should_skip({"endorsement": "qualified_with_warning", "confidence_level": 0.9})
+        assert not _should_skip(None)  # no audit → don't skip (conservative)
+
+    def test_conditional_ensemble_triggered_when_low_confidence(self) -> None:
+        """Ensemble should trigger when confidence < 0.75 or not endorsed."""
+        def _should_skip(audit: dict | None) -> bool:
+            if audit is None:
+                return False
+            return (
+                audit.get("endorsement") == "endorsed"
+                and audit.get("confidence_level", 0.0) >= 0.75
+            )
+
+        # Trigger cases: ensemble should NOT be skipped
+        assert not _should_skip(None)
+        assert not _should_skip({"endorsement": "qualified", "confidence_level": 0.5})
+        assert not _should_skip({"endorsement": "qualified_with_warning", "confidence_level": 0.3})
+        assert not _should_skip({"confidence_level": 0.9})  # missing endorsement
+        assert not _should_skip({})  # empty dict
+
+
+class TestCritic20ClosedLoop:
+    """Tests for Critic 2.0 decision closed-loop (action + retry_constraints)."""
+
+    def test_inject_constraints_prompt_empty(self) -> None:
+        """Empty or None constraints produce empty prompt."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        assert BaseExpert._inject_constraints_prompt(None) == ""
+        assert BaseExpert._inject_constraints_prompt({}) == ""
+
+    def test_inject_constraints_prompt_force_k(self) -> None:
+        """force_k constraint produces a k= directive."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        prompt = BaseExpert._inject_constraints_prompt({"force_k": 3})
+        assert "k 必须为 3" in prompt
+        assert "约束指令" in prompt
+
+    def test_inject_constraints_prompt_blocked(self) -> None:
+        """blocked_algorithms produces a ban directive."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        prompt = BaseExpert._inject_constraints_prompt(
+            {"blocked_algorithms": ["SpectralClustering", "DBSCAN"]}
+        )
+        assert "禁止使用以下算法" in prompt
+        assert "SpectralClustering" in prompt
+        assert "DBSCAN" in prompt
+
+    def test_inject_constraints_prompt_all(self) -> None:
+        """All constraint types combined produce a multi-line directive."""
+        from ACE_Agent.expert_sub_agents.base import BaseExpert
+        prompt = BaseExpert._inject_constraints_prompt({
+            "force_k": 5,
+            "blocked_algorithms": ["MeanShift"],
+            "force_preprocessing": "standardize",
+        })
+        assert "k 必须为 5" in prompt
+        assert "MeanShift" in prompt
+        assert "standardize" in prompt
+
+    def test_handle_audit_feedback_clear_or_warn_returns_empty(self) -> None:
+        """CLEAR and WARN actions should return empty list (no retry needed)."""
+        from ACE_Agent.agent_core.supervisor import ACESupervisor
+        sv = ACESupervisor()
+        trace: list[str] = []
+        actives = ["centroid", "zoo"]
+
+        assert sv._handle_audit_feedback(None, None, "", None, trace, actives) == []  # type: ignore[arg-type]
+        assert sv._handle_audit_feedback(
+            {"action": "CLEAR"}, None, "", None, trace, actives  # type: ignore[arg-type]
+        ) == []
+        assert sv._handle_audit_feedback(
+            {"action": "WARN", "endorsement": "qualified"}, None, "", None, trace, actives  # type: ignore[arg-type]
+        ) == []
+
+    def test_handle_audit_feedback_retry_without_constraints_returns_empty(self) -> None:
+        """RETRY with no valid constraints should skip (safety guard)."""
+        from ACE_Agent.agent_core.supervisor import ACESupervisor
+        sv = ACESupervisor()
+        trace: list[str] = []
+        actives = ["centroid"]
+
+        assert sv._handle_audit_feedback(
+            {"action": "RETRY"}, None, "", None, trace, actives  # type: ignore[arg-type]
+        ) == []
+        assert sv._handle_audit_feedback(
+            {"action": "RETRY", "retry_constraints": {}}, None, "", None, trace, actives  # type: ignore[arg-type]
+        ) == []

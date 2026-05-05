@@ -25,8 +25,10 @@ class DeepRepresentationExpert(BaseExpert):
         client: UniversalLLMClient,
         dataset: DatasetBundle,
         prompt: str,
+        constraints=None,
     ) -> str:
-        system_prompt = (
+        constraint_prompt = self._inject_constraints_prompt(constraints)
+        system_prompt = constraint_prompt + (
             "你是一个 Python 数据科学专家（深度聚类分支）。\n"
             "你的职责：利用神经网络（PyTorch）提取非线性特征并执行聚类。\n"
             "任务要求：\n"

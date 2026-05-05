@@ -483,6 +483,64 @@ def _safe_plot_path(path_obj) -> str | None:
     return None
 
 
+def _render_audit_card(audit: dict) -> None:  # type: ignore[type-arg]
+    """Render Critic post-hoc audit report as a styled info card."""
+    endorsement = audit.get("endorsement", "?")
+    confidence = audit.get("confidence_level", 0.0)
+    stability = audit.get("stability_score", 0.0)
+    hopkins = audit.get("hopkins", 0.0)
+    overfitting = audit.get("overfitting_risk", "unknown")
+    k_consistency = audit.get("winner_k_consistency", False)
+    findings = audit.get("findings", [])
+    recommendation = audit.get("recommendation", "")
+
+    endorsement_icon = {"endorsed": "✅", "qualified": "⚠️", "qualified_with_warning": "🔴"}.get(endorsement, "❓")
+    endorsement_label = {"endorsed": "通过", "qualified": "有条件通过", "qualified_with_warning": "需要关注"}.get(endorsement, "未知")
+
+    overfitting_color = {"low": "green", "medium": "orange", "high": "red"}.get(overfitting, "grey")
+
+    with st.expander(f"{endorsement_icon} 独立审计: {endorsement_label} (置信度 {confidence:.0%})", expanded=True):
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("综合置信度", f"{confidence:.0%}")
+        m2.metric("Bootstrap 稳定性", f"{stability:.2f}")
+        m3.metric("Hopkins 趋势", f"{hopkins:.2f}")
+        m4.metric("过拟合风险", overfitting, delta_color="off" if overfitting == "low" else "inverse",
+                  help=f"风险评估: {overfitting}")
+
+        st.caption(f"聚类数一致性: {'✅ 一致' if k_consistency else '⚠️ 与 CVI 共识不一致'}")
+
+        if findings:
+            st.markdown("**审计发现**")
+            for f_text in findings:
+                st.markdown(f"- {f_text}")
+
+        if recommendation:
+            st.info(f"**建议**: {recommendation}")
+
+
+def _render_ensemble_metrics(top) -> None:
+    """Render ensemble-specific metrics and co-association heatmap."""
+    coassoc = top.params.get("coassoc_matrix") if hasattr(top, "params") else None
+    if coassoc is None:
+        return
+
+    metrics = top.metrics if hasattr(top, "metrics") else top.get("metrics", {})
+    n_fused = metrics.get("n_experts_fused", "?")
+    entropy = metrics.get("entropy_of_agreement", 0.0)
+    agreement = metrics.get("agreement", 0.0)
+
+    st.markdown(f"**集成共识**: 融合 {n_fused} 位专家 | 一致性 {agreement:.1%} | 熵 {entropy:.3f}")
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(coassoc, cmap="YlOrRd", aspect="auto", vmin=0, vmax=1)
+    ax.set_title("专家共现矩阵 (Co-association Matrix)")
+    ax.set_xlabel("数据点索引")
+    ax.set_ylabel("数据点索引")
+    plt.colorbar(im, ax=ax, label="Agreement")
+    st.pyplot(fig)
+    plt.close(fig)
+
+
 def _render_report(r) -> None:  # type: ignore[type-arg]
     ranking = r.ranking if hasattr(r, "ranking") else r["ranking"]
     dataset = r.dataset if hasattr(r, "dataset") else r["dataset"]
@@ -494,6 +552,16 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
     score = float(top.metrics["score"] if hasattr(top, "metrics") else top["metrics"]["score"])
     c[0].metric("优胜算法", algo_name)
     c[2].metric("评分", f"{score:.3f}")
+
+    # ---- Critic Audit Card (if available) ----
+    audit = r.audit_report if hasattr(r, "audit_report") else r.get("audit_report")
+    if audit and isinstance(audit, dict):
+        _render_audit_card(audit)
+
+    # ---- Ensemble Co-association Heatmap (if winner is EnsembleConsensus) ----
+    if algo_name == "EnsembleConsensus":
+        _render_ensemble_metrics(top)
+
     cols = st.columns(2)
     raw_plot = _safe_plot_path(r.dataset_plot_path if hasattr(r, "dataset_plot_path") else r["dataset_plot_path"])
     if raw_plot:

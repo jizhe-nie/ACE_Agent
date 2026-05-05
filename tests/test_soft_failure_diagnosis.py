@@ -48,7 +48,7 @@ class _StubExpert(BaseExpert):
         super().__init__(key="stub", label="StubExpert")
         self._initial_code = initial_code
 
-    def _generate_code(self, client, dataset, prompt):  # type: ignore[override]
+    def _generate_code(self, client, dataset, prompt, constraints=None):  # type: ignore[override]
         return self._initial_code
 
 

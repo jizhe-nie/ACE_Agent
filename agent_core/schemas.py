@@ -79,4 +79,5 @@ class SupervisorReport:
     decision_trace: list[str]
     latex_path: Path | None = None
     llm_summary: str | None = None
+    audit_report: dict[str, Any] | None = None  # Critic post-hoc audit result
     response_type: str = "CLUSTER_TASK"  # "CLUSTER_TASK" 或 "FOLLOW_UP"

@@ -14,6 +14,15 @@ class AlgorithmZoo:
                 "category": "centroid",
                 "params": {"n_clusters": "expected_clusters", "random_state": 42},
                 "doc": "Classic centroid-based clustering.",
+                "max_samples": None,  # O(N) — unlimited
+            },
+            {
+                "name": "MiniBatchKMeans",
+                "library": "sklearn",
+                "category": "centroid",
+                "params": {"n_clusters": "expected_clusters", "random_state": 42, "batch_size": 1024},
+                "doc": "Mini-batch KMeans for large-scale data.",
+                "max_samples": None,  # O(N) — unlimited
             },
             {
                 "name": "GaussianMixture",
@@ -21,6 +30,7 @@ class AlgorithmZoo:
                 "category": "centroid",
                 "params": {"n_components": "expected_clusters", "random_state": 42},
                 "doc": "Probabilistic model assuming Gaussian distributions.",
+                "max_samples": None,  # O(N) — unlimited
             },
             {
                 "name": "DBSCAN",
@@ -28,6 +38,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {"eps": 0.5, "min_samples": 5},
                 "doc": "Density-based spatial clustering.",
+                "max_samples": 15000,  # sparse neighbourhood, OK up to ~15K
             },
             {
                 "name": "HDBSCAN",
@@ -35,6 +46,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {"min_cluster_size": 5},
                 "doc": "Hierarchical DBSCAN.",
+                "max_samples": 20000,  # more efficient than DBSCAN
             },
             {
                 "name": "AgglomerativeClustering",
@@ -42,6 +54,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {"n_clusters": "expected_clusters"},
                 "doc": "Hierarchical clustering with a bottom-up approach.",
+                "max_samples": 5000,  # O(N²) distance matrix
             },
             {
                 "name": "SpectralClustering",
@@ -49,6 +62,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {"n_clusters": "expected_clusters", "random_state": 42, "affinity": "nearest_neighbors"},
                 "doc": "Clustering based on graph Laplacian eigenvalues.",
+                "max_samples": 5000,  # O(N²) affinity matrix
             },
             {
                 "name": "OPTICS",
@@ -56,6 +70,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {"min_samples": 5},
                 "doc": "Ordering Points To Identify the Clustering Structure.",
+                "max_samples": 10000,  # reachability graph O(N log N)
             },
             {
                 "name": "Birch",
@@ -63,6 +78,7 @@ class AlgorithmZoo:
                 "category": "centroid",
                 "params": {"n_clusters": "expected_clusters"},
                 "doc": "Balanced Iterative Reducing and Clustering using Hierarchies.",
+                "max_samples": None,  # O(N) — unlimited
             },
             {
                 "name": "AffinityPropagation",
@@ -70,6 +86,7 @@ class AlgorithmZoo:
                 "category": "centroid",
                 "params": {"random_state": 42},
                 "doc": "Clustering based on message passing between data points.",
+                "max_samples": 3000,  # O(N²) similarity matrix
             },
             {
                 "name": "MeanShift",
@@ -77,6 +94,7 @@ class AlgorithmZoo:
                 "category": "topology",
                 "params": {},
                 "doc": "Centroid-based algorithm that seeks modes of density.",
+                "max_samples": 5000,  # O(N²) kernel computation
             },
         ]
 

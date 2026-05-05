@@ -91,11 +91,24 @@ class BenchmarkRunner:
                 )
                 continue
 
+            # Large-dataset awareness: bump sandbox timeout for big data
+            n = dataset.X.shape[0]
+            size_tag = "[HUGE]" if n > 50000 else ("[LARGE]" if n > 10000 else "[SMALL]")
+            print(f"  {size_tag} {dataset.display_name}: {n} samples × {dataset.X.shape[1]} features")
+            if n > 10000:
+                adaptive_timeout = min(n // 100, 900)  # 1s per 100 samples, max 900s
+            else:
+                adaptive_timeout = 0  # use sandbox default
+
             prompt = f"请分析 {dataset.display_name} 数据集，运行所有可用算法。"
             for expert_key in experts:
                 expert = self._registry.get(expert_key)
                 if expert is None:
                     continue
+                if adaptive_timeout > 0:
+                    sandbox = getattr(expert, "sandbox", None)
+                    if sandbox is not None:
+                        sandbox.timeout_sec = adaptive_timeout
                 try:
                     results = self._run_expert_on_dataset(
                         expert_key,

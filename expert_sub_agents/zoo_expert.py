@@ -51,6 +51,7 @@ class ZooExpert(BaseExpert):
         client: UniversalLLMClient,  # ZooExpert 不调用 LLM，client 仅满足接口签名
         dataset: DatasetBundle,
         prompt: str,
+        constraints=None,
     ) -> str:
         """
         构造完整的串行聚类代码。
@@ -81,12 +82,12 @@ class ZooExpert(BaseExpert):
             # a tighter eps=0.3 works reliably for low-to-medium noise datasets.
             if algo["name"] == "DBSCAN" and params.get("eps") == 0.5:
                 params["eps"] = 0.3
-            algo_configs.append({"name": algo["name"], "params": params})
+            algo_configs.append({"name": algo["name"], "params": params, "max_samples": algo.get("max_samples")})
 
         # 序列化算法配置供代码使用
         import json as _json
 
-        algo_configs_repr = _json.dumps(algo_configs, ensure_ascii=False)
+        algo_configs_repr = _json.dumps(algo_configs, ensure_ascii=False).replace(": null", ": None")
 
         plot_uses_pca = n_features > 2
         pca_import_line = (
@@ -108,7 +109,7 @@ class ZooExpert(BaseExpert):
             '_warnings.filterwarnings("ignore")',
             "",
             "from sklearn.cluster import (",
-            "    KMeans, DBSCAN, AgglomerativeClustering,",
+            "    KMeans, MiniBatchKMeans, DBSCAN, AgglomerativeClustering,",
             "    SpectralClustering, OPTICS, Birch, AffinityPropagation, MeanShift",
             ")",
             "from sklearn.mixture import GaussianMixture",
@@ -206,9 +207,23 @@ class ZooExpert(BaseExpert):
             "# --- 算法配置表 ---",
             f"_algo_configs = {algo_configs_repr}",
             "",
+            "# --- 大规模数据集熔断: 跳过 O(N²) 算法 ---",
+            "_n = X.shape[0]",
+            "_skipped = []",
+            "for _i in range(len(_algo_configs) - 1, -1, -1):",
+            "    _limit = _algo_configs[_i].get('max_samples')",
+            "    if _limit is not None and _n > _limit:",
+            "        _name = _algo_configs[_i]['name']",
+            "        _skipped.append(f'{_name}(N={_n}>{_limit})')",
+            "        del _algo_configs[_i]",
+            "if _skipped:",
+            "    import logging as _zoo_log",
+            '    _zoo_log.getLogger("zoo_expert").warning(f"大数据集( N={_n} )跳过 O(N²) 算法: {_skipped}")',
+            "",
             "# --- 算法类映射 ---",
             "_algo_map = {",
             '    "KMeans": KMeans,',
+            '    "MiniBatchKMeans": MiniBatchKMeans,',
             '    "GaussianMixture": GaussianMixture,',
             '    "DBSCAN": DBSCAN,',
             '    "AgglomerativeClustering": AgglomerativeClustering,',

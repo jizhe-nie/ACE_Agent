@@ -30,6 +30,8 @@ DATASET_LABELS = {
     "wine": "Wine 葡萄酒",
     "digits": "Optdigits 手写数字特征",
     "mnist": "MNIST 原始手写体",
+    "mnist_full": "MNIST Full (70K)",
+    "fashion_mnist": "Fashion-MNIST (70K)",
     "news": "20 Newsgroups 文本",
     "mfeat": "Multiple Features 多视图手写体",
     "custom": "自定义上传数据",
@@ -108,6 +110,8 @@ def infer_dataset_from_prompt(prompt: str) -> str | None:
         "wine": ["wine", "葡萄酒", "酒"],
         "digits": ["digits", "手写数字特征", "optdigits"],
         "mnist": ["mnist", "原始手写体", "图像聚类"],
+        "mnist_full": ["mnist full", "mnist_full", "完整mnist", "手写数字全集"],
+        "fashion_mnist": ["fashion", "fashion_mnist", "fashion-mnist", "时尚"],
         "news": ["news", "newsgroups", "文本聚类", "20news"],
         "mfeat": ["mfeat", "multi-feature", "真实多视图", "多特征"],
     }
@@ -220,6 +224,12 @@ def generate_dataset(
             feature_names=[f"px{i}" for i in range(784)],
             metadata={"expected_clusters": 10},
         )
+
+    if dataset_name in ("mnist_full", "fashion_mnist"):
+        from ACE_Agent.benchmark.dataloader import load_benchmark_dataset
+
+        logger.info("正在加载 %s 数据集 (torchvision, 首次需下载)...", dataset_name)
+        return load_benchmark_dataset(dataset_name)
 
     if dataset_name == "news":
         logger.info("正在加载 20 Newsgroups 文本数据并进行 TF-IDF 向量化...")

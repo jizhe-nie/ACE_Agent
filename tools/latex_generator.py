@@ -61,6 +61,12 @@ class LatexReportGenerator:
                 )
             )
 
+        # ---- audit section (if available) ----
+        audit_lines: list[str] = []
+        audit = report.audit_report
+        if audit and isinstance(audit, dict):
+            audit_lines = _build_audit_section(audit)
+
         tex = "\n".join(
             [
                 r"\documentclass[11pt]{article}",
@@ -97,6 +103,7 @@ class LatexReportGenerator:
                 r"\end{tabular}",
                 r"\section*{可视化图表}",
                 *figures,
+                *audit_lines,
                 r"\end{document}",
             ]
         )
@@ -108,3 +115,49 @@ def _format_optional(value: float | int | None) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.3f}"
+
+
+def _build_audit_section(audit: dict) -> list[str]:  # type: ignore[type-arg]
+    """Build LaTeX lines for the independent Critic audit section."""
+    endorsement = str(audit.get("endorsement", "N/A"))
+    confidence = float(audit.get("confidence_level", 0))
+    stability = float(audit.get("stability_score", 0))
+    hopkins = float(audit.get("hopkins", 0))
+    overfitting = str(audit.get("overfitting_risk", "unknown"))
+    k_consistency = bool(audit.get("winner_k_consistency", False))
+    findings = audit.get("findings", [])
+    recommendation = str(audit.get("recommendation", ""))
+
+    endorsement_label = {
+        "endorsed": "通过",
+        "qualified": "有条件通过",
+        "qualified_with_warning": "需要关注",
+    }.get(endorsement, "未知")
+
+    lines: list[str] = [
+        r"\section*{独立审计结论 (Critic Audit)}",
+        r"\begin{tabular}{@{}ll@{}}",
+        r"\toprule",
+        rf"审计裁决 & {_latex_escape(endorsement_label)} ({_latex_escape(endorsement)}) \\",
+        r"\midrule",
+        rf"综合置信度 & {confidence:.0%} \\",
+        rf"Bootstrap 稳定性 & {stability:.2f} \\",
+        rf"Hopkins 聚类趋势 & {hopkins:.2f} \\",
+        rf"过拟合风险 & {_latex_escape(overfitting)} \\",
+        rf"聚类数一致性 & {'一致' if k_consistency else '与 CVI 共识不一致'} \\",
+        r"\bottomrule",
+        r"\end{tabular}",
+    ]
+
+    if findings:
+        lines.append(r"\subsection*{审计发现}")
+        lines.append(r"\begin{itemize}")
+        for f_text in findings:
+            lines.append(rf"\item {_latex_escape(str(f_text))}")
+        lines.append(r"\end{itemize}")
+
+    if recommendation:
+        lines.append(r"\subsection*{建议}")
+        lines.append(_latex_escape(recommendation))
+
+    return lines

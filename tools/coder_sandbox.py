@@ -73,7 +73,7 @@ class DataContext:
     fails fast with a clear message.
     """
 
-    __slots__ = ("X", "y", "n_samples", "n_features", "expected_clusters", "has_labels", "display_name")
+    __slots__ = ("X", "y", "n_samples", "n_features", "expected_clusters", "has_labels", "display_name", "metadata")
 
     def __init__(
         self,
@@ -81,6 +81,7 @@ class DataContext:
         y: np.ndarray | None,
         display_name: str = "",
         expected_clusters: int = 3,
+        metadata: dict[str, Any] | None = None,
     ):
         object.__setattr__(self, "X", X)
         object.__setattr__(self, "y", y)
@@ -89,6 +90,7 @@ class DataContext:
         object.__setattr__(self, "expected_clusters", expected_clusters)
         object.__setattr__(self, "has_labels", y is not None)
         object.__setattr__(self, "display_name", display_name)
+        object.__setattr__(self, "metadata", metadata or {})
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise TypeError(
@@ -400,6 +402,7 @@ class CoderSandbox:
         pre_inject: dict[str, Any] | None = None,
         display_name: str = "",
         expected_clusters: int = 3,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Execute a code string inside the sandbox namespace.
@@ -444,6 +447,7 @@ class CoderSandbox:
                 y,
                 display_name=display_name,
                 expected_clusters=expected_clusters,
+                metadata=metadata,
             ),
             **merged_pre,
         }

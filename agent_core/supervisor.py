@@ -28,14 +28,15 @@ class ACESupervisor:
     - 专家注册表改用 build_expert_registry()，包含 zoo 专家（含 DBSCAN/HDBSCAN）。
     - 默认激活策略：centroid + topology + zoo（三家并行）。
     - dimension / deep_representation / multi_view 已注册但默认不激活；
-      Phase 1 的 Critic/智能路由将接管选择逻辑。
+    - Critic 重构为后验审计方（2026-04-29）：从并行池移除，在选出最优结果后
+      独立运行 _execute_audit()，输出结构化 audit_report，不参与排名。
     - 新增 CODE_EXAMPLE 分流路径（只返回代码 Markdown，不走沙箱）。
     - 每个专家执行用 try/except 包裹，异常转为日志不中断编排。
     - _error_report 增强：汇总每个专家最后 3 行日志作为排错依据。
     """
 
-    # 默认激活的专家 key
-    _DEFAULT_ACTIVE_EXPERTS: list[str] = ["centroid", "topology", "zoo", "critic"]
+    # 默认激活的专家 key（ensemble 在第 2 步由 _execute_ensemble 独立调用）
+    _DEFAULT_ACTIVE_EXPERTS: list[str] = ["centroid", "topology", "zoo"]
 
     def __init__(self) -> None:
         self.router = MasterRouter()
@@ -141,8 +142,51 @@ class ACESupervisor:
 
         # 排序与摘要
         ranking = sorted(all_results, key=lambda x: x.metrics.get("score", 0.0), reverse=True)
-        client = UniversalLLMClient(settings)
         best = ranking[0]
+
+        # 后验审计：Critic 独立审查最优结果
+        audit_report = self._execute_audit(best, dataset, settings, trace)
+
+        # Critic 2.0 反馈闭环：审计→约束重试→复验
+        retry_results = self._handle_audit_feedback(
+            audit_report, dataset, prompt, settings, trace, active_experts
+        )
+        if retry_results:
+            all_results.extend(retry_results)
+            ranking = sorted(all_results, key=lambda x: x.metrics.get("score", 0.0), reverse=True)
+            best = ranking[0]
+            trace.append("【Critic 2.0】约束重试完成，已重新排名。")
+            # Re-audit the new best result
+            audit_report = self._execute_audit(best, dataset, settings, trace)
+
+        # 集成共识：仅在 Critic 对单一最优结果有保留时触发
+        _should_ensemble = True
+        if audit_report is None:
+            trace.append("【集成】无审计报告，保守触发集成共识。")
+        elif (
+            audit_report.get("endorsement") == "endorsed"
+            and audit_report.get("confidence_level", 0.0) >= 0.75
+        ):
+            _should_ensemble = False
+            trace.append(
+                "【集成】Critic 已 endorsement 单一最优结果"
+                f"（置信度 {audit_report.get('confidence_level', 0):.0%}），跳过集成共识。"
+            )
+        else:
+            trace.append(
+                f"【集成】Critic 裁决为 '{audit_report.get('endorsement')}'"
+                f"（置信度 {audit_report.get('confidence_level', 0):.0%}），触发集成融合拯救。"
+            )
+
+        if _should_ensemble:
+            consensus_result = self._execute_ensemble(all_results, dataset, trace)
+            if consensus_result is not None:
+                all_results.append(consensus_result)
+                # Re-rank with consensus result included
+                ranking = sorted(all_results, key=lambda x: x.metrics.get("score", 0.0), reverse=True)
+                best = ranking[0]
+
+        client = UniversalLLMClient(settings)
         summary = client.summarize_report(
             {
                 "user_intent": prompt,
@@ -174,6 +218,7 @@ class ACESupervisor:
             ranking=ranking,
             executive_summary=summary or "聚类分析完成。",
             decision_trace=trace,
+            audit_report=audit_report,
             response_type="CLUSTER_TASK",
         )
 
@@ -185,6 +230,162 @@ class ACESupervisor:
         self.memory.append({"role": "user", "content": prompt})
         self.memory.append({"role": "assistant", "content": report.executive_summary})
         return report
+
+    # ------------------------------------------------------------------
+    # 后验审计
+    # ------------------------------------------------------------------
+
+    def _execute_audit(
+        self,
+        winner: AlgorithmRunResult,
+        dataset: DatasetBundle,
+        settings: LLMSettings,
+        trace: list[str],
+    ) -> dict[str, Any] | None:
+        """Run CriticExpert as a post-hoc auditor on the winning result.
+
+        Returns an ``audit_report`` dict or ``None`` if the audit is unavailable.
+        """
+        critic = self.experts.get("critic")
+        if critic is None:
+            trace.append("【审计】Critic 专家未注册，跳过审计。")
+            return None
+
+        trace.append(f"【审计】对最优结果 '{winner.algorithm_name}' 启动独立后验审计...")
+        try:
+            audit = critic.execute_audit(winner, dataset, settings)
+            if audit:
+                endorsement = audit.get("endorsement", "?")
+                confidence = audit.get("confidence_level", "?")
+                trace.append(
+                    f"【审计】完成 — 裁决: {endorsement}, 置信度: {confidence}"
+                )
+            else:
+                trace.append("【审计】审计未产出有效报告。")
+            return audit
+        except Exception as exc:
+            trace.append(f"【审计】Critic 审计过程异常: {exc}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Critic 2.0 反馈闭环
+    # ------------------------------------------------------------------
+
+    def _handle_audit_feedback(
+        self,
+        audit_report: dict | None,
+        dataset: DatasetBundle,
+        prompt: str,
+        settings: LLMSettings,
+        trace: list[str],
+        active_experts: list[str],
+    ) -> list[AlgorithmRunResult]:
+        """Critic 2.0 closed-loop: RETRY with constraints, max 2 attempts.
+
+        When the audit finds the best result untrustworthy (action=RETRY),
+        re-dispatch the expert pool with constraint instructions derived
+        from the audit findings.
+        """
+        if audit_report is None:
+            return []
+
+        action = audit_report.get("action", "CLEAR")
+        if action == "CLEAR":
+            return []
+        if action == "WARN":
+            trace.append("【Critic 2.0】审计裁决为 WARN，接受当前结果（不重试）。")
+            return []
+
+        # action == "RETRY"
+        constraints = audit_report.get("retry_constraints", {})
+        if not constraints:
+            trace.append("【Critic 2.0】RETRY 但无有效约束，跳过重试。")
+            return []
+
+        trace.append(
+            f"【Critic 2.0】审计裁决为 RETRY，启动约束重试..."
+            f" force_k={constraints.get('force_k')},"
+            f" blocked={constraints.get('blocked_algorithms')}"
+        )
+
+        for attempt in range(1, 3):  # max_retries=2
+            trace.append(f"【Critic 2.0】第 {attempt}/2 次约束重试...")
+            retry_results: list[AlgorithmRunResult] = []
+
+            for key in active_experts:
+                expert = self.experts.get(key)
+                if expert is None:
+                    continue
+                try:
+                    if attempt > 1:
+                        import os
+                        os.environ.setdefault("ACE_SANDBOX_TIMEOUT_SEC", "120")
+                    results = expert.execute_with_self_correction(
+                        dataset, prompt, settings, constraints=constraints,
+                    )
+                    retry_results.extend(results)
+                    trace.extend(expert.last_logs)
+                except Exception as exc:
+                    trace.append(
+                        f"【Critic 2.0】专家 '{key}' 约束重试异常: {exc}"
+                    )
+
+            if retry_results:
+                trace.append(
+                    f"【Critic 2.0】第 {attempt} 次重试产出 {len(retry_results)} 个结果。"
+                )
+                return retry_results
+
+            trace.append(f"【Critic 2.0】第 {attempt} 次重试未产出有效结果。")
+
+        return []
+
+    # ------------------------------------------------------------------
+    # 集成共识
+    # ------------------------------------------------------------------
+
+    def _execute_ensemble(
+        self,
+        all_results: list[AlgorithmRunResult],
+        dataset: DatasetBundle,
+        trace: list[str],
+    ) -> AlgorithmRunResult | None:
+        """Run EnsembleConsensusExpert to fuse all expert labels.
+
+        Builds a co-association matrix from all valid result labels and
+        produces consensus labels via hierarchical clustering.
+
+        Returns ``None`` if the ensemble expert is unavailable or fewer
+        than 2 valid label sets exist.
+        """
+        ensemble = self.experts.get("ensemble")
+        if ensemble is None:
+            trace.append("【集成】Ensemble 专家未注册，跳过共识融合。")
+            return None
+
+        valid_count = sum(
+            1 for r in all_results
+            if getattr(r, "labels", None) is not None
+            and len(getattr(r, "labels", [])) > 0
+        )
+        if valid_count < 2:
+            trace.append(f"【集成】有效标签集不足 ({valid_count} < 2)，跳过共识融合。")
+            return None
+
+        trace.append(f"【集成】对 {valid_count} 套专家标签启动 Co-association 共识融合...")
+        try:
+            result = ensemble.execute_ensemble(all_results, dataset)
+            if result is not None:
+                trace.append(
+                    f"【集成】完成 — 融合 {result.metrics.get('n_experts_fused', '?')} 位专家, "
+                    f"一致性={result.metrics.get('agreement', 0):.3f}"
+                )
+            else:
+                trace.append("【集成】共识融合未产出有效结果。")
+            return result
+        except Exception as exc:
+            trace.append(f"【集成】共识融合异常: {exc}")
+            return None
 
     # ------------------------------------------------------------------
     # FOLLOW_UP 路径

@@ -4,6 +4,7 @@ from ACE_Agent.expert_sub_agents.centroid_expert import CentroidExpert
 from ACE_Agent.expert_sub_agents.critic_expert import CriticExpert
 from ACE_Agent.expert_sub_agents.deep_representation import DeepRepresentationExpert
 from ACE_Agent.expert_sub_agents.dimension_expert import DimensionExpert
+from ACE_Agent.expert_sub_agents.ensemble_expert import EnsembleConsensusExpert
 from ACE_Agent.expert_sub_agents.multi_view_expert import MultiViewExpert
 from ACE_Agent.expert_sub_agents.topology_expert import TopologyExpert
 from ACE_Agent.expert_sub_agents.zoo_expert import ZooExpert
@@ -14,8 +15,8 @@ _logger = logging.getLogger(__name__)
 def build_expert_registry():
     """Build the full expert registry.
 
-    Ready experts: centroid, topology, zoo, critic, dimension, deep_representation.
-    WIP (Phase 2+): multi_view.
+    Active: centroid, topology, zoo, critic, dimension, ensemble.
+    WIP (Phase 2+): multi_view, deep_representation.
     """
     candidates = [
         CentroidExpert,
@@ -23,6 +24,7 @@ def build_expert_registry():
         ZooExpert,
         CriticExpert,
         DimensionExpert,
+        EnsembleConsensusExpert,
         DeepRepresentationExpert,
         MultiViewExpert,
     ]

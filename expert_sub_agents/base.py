@@ -61,6 +61,7 @@ class BaseExpert(ABC):
         dataset: DatasetBundle,
         prompt: str,
         settings: LLMSettings,
+        constraints: dict | None = None,
     ) -> list[AlgorithmRunResult]:
         """
         Core method: run the expert with automatic code self-correction.
@@ -74,7 +75,7 @@ class BaseExpert(ABC):
         logs = [f"[{self.label}] 开始分析数据特征并生成代码..."]
 
         # 1. Initial code generation
-        raw_code = self._generate_code(client, dataset, prompt)
+        raw_code = self._generate_code(client, dataset, prompt, constraints=constraints)
         code = _strip_code_fences(raw_code)
 
         # 2. Attempt to run + fix (up to MAX_RETRIES times)
@@ -88,6 +89,7 @@ class BaseExpert(ABC):
                     pre_inject=self.PRE_INJECT or None,
                     display_name=dataset.display_name,
                     expected_clusters=dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3,
+                    metadata=dataset.metadata,
                 )
             except SandboxResourceExceeded as exc:
                 logs.append(f"[{self.label}] 沙箱资源超限 ({exc.reason}): {exc.detail}")
@@ -182,6 +184,7 @@ class BaseExpert(ABC):
         client: UniversalLLMClient,
         dataset: DatasetBundle,
         prompt: str,
+        constraints: dict | None = None,
     ) -> str:
         """Each expert implements its own code generation logic.
 
@@ -197,6 +200,24 @@ class BaseExpert(ABC):
 
         Forbidden: writing to any other variable name.
         """
+
+    @staticmethod
+    def _inject_constraints_prompt(constraints: dict | None) -> str:
+        """Build a constraint instruction block for the LLM system prompt.
+
+        Used by Critic 2.0 to inject retry_constraints into code generation.
+        """
+        if not constraints:
+            return ""
+        lines = ["\n## 约束指令（必须严格遵守）"]
+        if constraints.get("force_k"):
+            lines.append(f"- 聚类数 k 必须为 {constraints['force_k']}")
+        if constraints.get("blocked_algorithms"):
+            blocked = ", ".join(constraints["blocked_algorithms"])
+            lines.append(f"- 禁止使用以下算法：{blocked}")
+        if constraints.get("force_preprocessing"):
+            lines.append(f"- 必须对数据应用 {constraints['force_preprocessing']} 预处理")
+        return "\n".join(lines) + "\n"
 
     def _fix_code(
         self,

@@ -75,6 +75,7 @@ class CriticExpert(BaseExpert):
         client: UniversalLLMClient,
         dataset: DatasetBundle,
         prompt: str,
+        constraints=None,
     ) -> str:
         winner = self._audit_target or {}
         winner_json = json.dumps(winner, ensure_ascii=False, indent=2)
@@ -103,10 +104,14 @@ class CriticExpert(BaseExpert):
             "- Silhouette > 0.8 但 Hopkins < 0.5 → overfitting_risk='high'\n"
             "- stability_score < 0.6 → overfitting_risk ≥ 'medium'\n"
             "- 多指标最优k分歧大 → 数据信号弱\n\n"
-            "### 5. 审计裁决 (endorsement)\n"
-            "- 'endorsed': stability_score ≥ 0.75 + Hopkins ≥ 0.6 + k 一致\n"
-            "- 'qualified': stability_score ≥ 0.5，存在轻微不一致\n"
-            "- 'qualified_with_warning': 存在明显问题（不稳定 / 过拟合 / k 矛盾）\n\n"
+            "### 5. 审计裁决 (endorsement) + 行动指令 (action, Critic 2.0)\n"
+            "- 'endorsed' → action='CLEAR': stability_score ≥ 0.75 + Hopkins ≥ 0.6 + k 一致\n"
+            "- 'qualified' → action='WARN': stability_score ≥ 0.5，存在轻微不一致\n"
+            "- 'qualified_with_warning' → action='RETRY': 存在明显问题（不稳定 / 过拟合 / k 矛盾）\n"
+            "- 当 action='RETRY' 时，必须填写 retry_constraints：\n"
+            "  - force_k: 根据 CVI 多指标投票得出的 k_consensus（若与 winner k 不一致）\n"
+            "  - blocked_algorithms: 列出表现差的算法（如 stability<0.3 的算法）\n"
+            "  - force_preprocessing: 若 Hopkins<0.5 建议 'standardize' 或 'pca'\n\n"
             "## 输出格式（严格遵守）\n"
             "```python\n"
             "artifacts['Critic_Audit'] = {\n"
@@ -122,6 +127,12 @@ class CriticExpert(BaseExpert):
             "        'hopkins': float,                # Hopkins 统计量\n"
             "        'winner_k_consistency': bool,    # 获胜者 k 与 CVI 共识一致?\n"
             "        'endorsement': str,              # 'endorsed' / 'qualified' / 'qualified_with_warning'\n"
+            "        'action': str,                   # Critic 2.0: 'CLEAR' / 'WARN' / 'RETRY'\n"
+            "        'retry_constraints': {           # 仅 action==RETRY 时有效\n"
+            "            'force_k': int | None,\n"
+            "            'blocked_algorithms': [str, ...],\n"
+            "            'force_preprocessing': str | None,  # 'standardize'/'normalize'/'pca'\n"
+            "        },\n"
             "        'findings': [str, ...],          # 3-5 条关键审计发现\n"
             "        'recommendation': str,           # 给用户的建议\n"
             "    },\n"

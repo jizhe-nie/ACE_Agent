@@ -16,8 +16,10 @@ class TopologyExpert(BaseExpert):
         client: UniversalLLMClient,
         dataset: DatasetBundle,
         prompt: str,
+        constraints=None,
     ) -> str:
-        system_prompt = (
+        constraint_prompt = self._inject_constraints_prompt(constraints)
+        system_prompt = constraint_prompt + (
             "你是一个高级 Python 数据科学专家（拓扑与密度算法分支）。\n"
             "## 核心指令：严谨的导入与自适应 (Strict Imports & Auto-Tuning)\n"
             "1. **必须显式包含所有导入**（严禁省略！）：\n"
