@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
@@ -12,6 +13,7 @@ if __package__ is None or __package__ == "":
 os.environ["OMP_NUM_THREADS"] = "1"  # suppress KMeans thread warning
 
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402,F401  (kept for possible downstream use)
 import streamlit as st  # noqa: E402
 
@@ -19,7 +21,6 @@ from ACE_Agent.agent_core.supervisor import ACESupervisor
 from ACE_Agent.tools.data_factory import (
     DATASET_LABELS,
     generate_dataset,
-    infer_dataset_from_prompt,
     list_demo_datasets,
     load_custom_dataset,
 )
@@ -176,12 +177,28 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
                 type="password",
                 key="primary_api_key",
             )
-            model = st.selectbox(
+            model_options = ["(自定义模型...)" ] + p_cfg["models"]
+            saved_model = ss.get("model", "")
+            # Determine if saved model is a custom one (not in predefined list)
+            is_custom_model = saved_model and saved_model not in p_cfg["models"]
+            default_idx = 0 if is_custom_model else (
+                model_options.index(saved_model) if saved_model in model_options else 0
+            )
+            model_choice = st.selectbox(
                 "模型",
-                p_cfg["models"],
-                index=(0 if ss.get("model") not in p_cfg["models"] else p_cfg["models"].index(ss.get("model"))),
+                model_options,
+                index=default_idx,
                 key="primary_model_sel",
             )
+            if model_choice == "(自定义模型...)":
+                model = st.text_input(
+                    "自定义模型名称",
+                    value=saved_model if is_custom_model else "",
+                    placeholder="输入模型名称，如 deepseek-v4-pro",
+                    key="primary_model_custom",
+                )
+            else:
+                model = model_choice
 
             st.divider()
 
@@ -205,12 +222,27 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
                     type="password",
                     key="fallback_api_key",
                 )
-                fallback_model = st.selectbox(
+                fb_model_options = ["(自定义模型...)" ] + fb_cfg["models"]
+                fb_saved = ss.get("fallback_model", "")
+                fb_is_custom = fb_saved and fb_saved not in fb_cfg["models"]
+                fb_default_idx = 0 if fb_is_custom else (
+                    fb_model_options.index(fb_saved) if fb_saved in fb_model_options else 0
+                )
+                fb_model_choice = st.selectbox(
                     "Fallback 模型",
-                    fb_cfg["models"],
-                    index=0,
+                    fb_model_options,
+                    index=fb_default_idx,
                     key="fallback_model_sel",
                 )
+                if fb_model_choice == "(自定义模型...)":
+                    fallback_model = st.text_input(
+                        "自定义 Fallback 模型名称",
+                        value=fb_saved if fb_is_custom else "",
+                        placeholder="输入模型名称",
+                        key="fallback_model_custom",
+                    )
+                else:
+                    fallback_model = fb_model_choice
 
             if st.button("保存配置", use_container_width=True):
                 keys = ss.get("api_keys", {})
@@ -303,6 +335,17 @@ def main() -> None:
 
     with st.expander("Data Config", expanded=not st.session_state.messages):
         t1, t2 = st.tabs(["内置数据", "上传数据"])
+
+        # 固定尺寸数据集：不需要 n_samples / noise 滑块
+        FIXED_SIZE_DATASETS = {
+            "iris", "wine", "digits", "mnist", "mnist_full",
+            "fashion_mnist", "news", "mfeat",
+            "pathbased", "square", "spiral_sipu", "half_kernel",
+            "usps", "reuters", "har",
+            "cifar10_raw", "cifar10_gap", "cifar10_resnet",
+            "pendigits", "letter", "coil20",
+        }
+
         with t1:
             c1, c2 = st.columns(2)
             ds_name = c1.selectbox(
@@ -310,9 +353,18 @@ def main() -> None:
                 [d for d in list_demo_datasets() if d != "custom"],
                 format_func=lambda v: DATASET_LABELS[v],
             )
-            sc = c2.slider("样本量", 180, 2000, 480, 30)
+            is_fixed = ds_name in FIXED_SIZE_DATASETS
+            if is_fixed:
+                sc = c2.slider("样本量", 180, 2000, 480, 30, disabled=True,
+                               help="此数据集为固定尺寸，不可调整样本量")
+            else:
+                sc = c2.slider("样本量", 180, 2000, 480, 30)
             c3, c4 = st.columns(2)
-            noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01)
+            if is_fixed:
+                noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01, disabled=True,
+                                  help="此数据集为固定数据，无噪声参数")
+            else:
+                noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01)
             seed = c4.number_input("随机种子", 0, 9999, 42)
         with t2:
             uploaded_file = st.file_uploader("上传 CSV/Excel", type=["csv", "xlsx", "xls"])
@@ -423,7 +475,19 @@ def _handle_prompt(
     supervisor = st.session_state.supervisor
 
     with st.chat_message("assistant"):
-        with st.status("ACE Orchestrator 正在运行...", expanded=True) as status:
+        progress_placeholder = st.empty()
+        elapsed_placeholder = st.empty()
+        start_time = datetime.now()
+
+        def _update_progress(msg: str, step: int = 0, total: int = 1) -> None:
+            """Streamlit-safe progress updater."""
+            elapsed = (datetime.now() - start_time).total_seconds()
+            bar = "▮" * step + "▯" * (total - step) if total > 1 else ""
+            progress_placeholder.markdown(
+                f"⏳ {msg}\n\n{bar if bar else ''}\n\n_已耗时 {elapsed:.0f}s_"
+            )
+
+        with st.status("ACE Orchestrator 正在初始化...", expanded=True) as status:
             st.write("正在通过 MasterRouter 进行语义识别...")
 
             # Build router client with fallback support
@@ -438,17 +502,33 @@ def _handle_prompt(
                 if uploaded_file:
                     dataset = _cached_load_custom(uploaded_file.getvalue(), uploaded_file.name)
                 else:
-                    inferred = infer_dataset_from_prompt(prompt)
-                    dataset = generate_dataset(inferred or ds_name, n_samples=sc, noise=noise, random_state=seed)
+                    dataset = generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
 
-            st.write("正在激活专家 Agent 并监控自愈执行...")
+            n_experts = len(supervisor._DEFAULT_ACTIVE_EXPERTS)
+            if dataset and dataset.X.shape[1] > 2:
+                n_experts += 1  # dimension expert auto-activated for high-dim
+            st.write(f"预计调度 {n_experts} 个专家并行执行 (含自愈重试)...")
+            status.update(label=f"正在运行 {n_experts} 个专家...", state="running")
+
+            import time as _time
+            _start = _time.time()
             report = supervisor.run(
                 dataset=dataset,
                 user_prompt=prompt,
                 llm_settings=settings,
                 intent_data=intent,
+                progress_callback=_update_progress,
             )
-            status.update(label="分析任务完成", state="complete", expanded=False)
+            _elapsed = _time.time() - _start
+            n_results = len(report.results) if report.response_type == "CLUSTER_TASK" else 0
+            status.update(
+                label=f"完成 — {n_results} 个结果 (耗时 {_elapsed:.0f}s)",
+                state="complete",
+                expanded=False,
+            )
+
+        progress_placeholder.empty()
+        elapsed_placeholder.empty()
 
         thought = "\n".join(report.decision_trace)
         st.markdown(report.llm_summary or report.executive_summary)
@@ -498,8 +578,6 @@ def _render_audit_card(audit: dict) -> None:  # type: ignore[type-arg]
     endorsement_icon = {"endorsed": "✅", "qualified": "⚠️", "qualified_with_warning": "🔴"}.get(endorsement, "❓")
     endorsement_label = {"endorsed": "通过", "qualified": "有条件通过", "qualified_with_warning": "需要关注"}.get(endorsement, "未知")
 
-    overfitting_color = {"low": "green", "medium": "orange", "high": "red"}.get(overfitting, "grey")
-
     with st.expander(f"{endorsement_icon} 独立审计: {endorsement_label} (置信度 {confidence:.0%})", expanded=True):
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("综合置信度", f"{confidence:.0%}")
@@ -521,7 +599,8 @@ def _render_audit_card(audit: dict) -> None:  # type: ignore[type-arg]
 
 def _render_ensemble_metrics(top) -> None:
     """Render ensemble-specific metrics and co-association heatmap."""
-    coassoc = top.params.get("coassoc_matrix") if hasattr(top, "params") else None
+    params = top.params if hasattr(top, "params") else top.get("params", {})
+    coassoc = params.get("coassoc_matrix") if isinstance(params, dict) else None
     if coassoc is None:
         return
 
@@ -529,15 +608,56 @@ def _render_ensemble_metrics(top) -> None:
     n_fused = metrics.get("n_experts_fused", "?")
     entropy = metrics.get("entropy_of_agreement", 0.0)
     agreement = metrics.get("agreement", 0.0)
+    expert_names = params.get("expert_names", [])
 
-    st.markdown(f"**集成共识**: 融合 {n_fused} 位专家 | 一致性 {agreement:.1%} | 熵 {entropy:.3f}")
+    # Compute readablity hints
+    n = coassoc.shape[0]
+    off_diag = coassoc.copy()
+    np.fill_diagonal(off_diag, np.nan)
+    off_diag_mean = float(np.nanmean(off_diag))
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    st.markdown(
+        f"**集成共识**: 融合 {n_fused} 位专家 ({', '.join(expert_names) if expert_names else '?'}) | "
+        f"一致性 {agreement:.1%} | 信息熵 {entropy:.3f}"
+    )
+    st.caption(
+        f"{n} 个数据点 | "
+        f"非对角线平均共现频率: {off_diag_mean:.2f} "
+        f"({'专家间高度共识' if off_diag_mean < 0.3 or off_diag_mean > 0.7 else '专家间分歧较大'})"
+    )
+
+    fig, ax = plt.subplots(figsize=(6.5, 6))
     im = ax.imshow(coassoc, cmap="YlOrRd", aspect="auto", vmin=0, vmax=1)
-    ax.set_title("专家共现矩阵 (Co-association Matrix)")
-    ax.set_xlabel("数据点索引")
-    ax.set_ylabel("数据点索引")
-    plt.colorbar(im, ax=ax, label="Agreement")
+
+    # Axis ticks: show actual data point ranges
+    if n <= 20:
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels([str(i) for i in range(n)], fontsize=6)
+        ax.set_yticklabels([str(i) for i in range(n)], fontsize=6)
+    else:
+        step = max(n // 8, 1)
+        tick_pos = list(range(0, n, step))
+        ax.set_xticks(tick_pos)
+        ax.set_yticks(tick_pos)
+        ax.set_xticklabels([str(i) for i in tick_pos], fontsize=7)
+        ax.set_yticklabels([str(i) for i in tick_pos], fontsize=7)
+
+    ax.set_title("专家共现矩阵 (Co-association Matrix)", fontsize=12, weight="bold")
+    ax.set_xlabel("数据点索引", fontsize=9)
+    ax.set_ylabel("数据点索引", fontsize=9)
+
+    cbar = plt.colorbar(im, ax=ax, shrink=0.82)
+    cbar.set_label("共现频率\n(1.0 = 所有专家同意两点同簇)", fontsize=8)
+
+    # Annotate key cells for small matrices
+    if n <= 15:
+        for i in range(n):
+            for j in range(n):
+                ax.text(j, i, f"{coassoc[i, j]:.2f}", ha="center", va="center",
+                        fontsize=5, color="black" if coassoc[i, j] > 0.6 else "white")
+
+    plt.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
 
@@ -554,6 +674,28 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
     c[0].metric("优胜算法", algo_name)
     c[2].metric("评分", f"{score:.3f}")
 
+    # ---- Per-Algorithm Ranking Table ----
+    if len(ranking) > 1:
+        st.markdown("### 算法排名")
+        rows = []
+        for i, item in enumerate(ranking):
+            algo = item.algorithm_name if hasattr(item, "algorithm_name") else item["algorithm_name"]
+            expert = item.expert_label if hasattr(item, "expert_label") else item["expert_label"]
+            m = item.metrics if hasattr(item, "metrics") else item["metrics"]
+            s = float(m.get("score", 0))
+            rows.append({
+                "排名": i + 1,
+                "算法": algo,
+                "专家来源": expert,
+                "评分": f"{s:.4f}",
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={"排名": st.column_config.NumberColumn(width="small")},
+        )
+
     # ---- Critic Audit Card (if available) ----
     audit = r.audit_report if hasattr(r, "audit_report") else r.get("audit_report")
     if audit and isinstance(audit, dict):
@@ -562,6 +704,18 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
     # ---- Ensemble Co-association Heatmap (if winner is EnsembleConsensus) ----
     if algo_name == "EnsembleConsensus":
         _render_ensemble_metrics(top)
+
+    # ---- Phase 3: Graph-based visualizations ----
+    top_params = top.params if hasattr(top, "params") else top.get("params", {})
+    top_metrics = top.metrics if hasattr(top, "metrics") else top.get("metrics", {})
+
+    # Graph disagreement heatmap (when high disagreement exists)
+    if top_metrics.get("high_disagreement_ratio", 0) > 0.1:
+        _render_disagreement_heatmap(top, dataset)
+
+    # Graph connectivity overlay (when graph metrics available)
+    if top_metrics.get("graph_connectivity_agreement") is not None:
+        _render_graph_metrics_card(top_metrics, top_params)
 
     cols = st.columns(2)
     raw_plot = _safe_plot_path(r.dataset_plot_path if hasattr(r, "dataset_plot_path") else r["dataset_plot_path"])
@@ -574,6 +728,52 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
         cols[1].image(top_plot, caption="最优聚类结果")
     else:
         cols[1].info("该算法未生成聚类可视化图")
+
+
+def _render_disagreement_heatmap(top, dataset) -> None:
+    """Render points with high expert disagreement in red."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    labels = top.labels if hasattr(top, "labels") else top.get("labels")
+    if labels is None:
+        return
+    lbls = np.array(labels, dtype=int)
+    X_np = np.array(dataset.X if hasattr(dataset, "X") else dataset.get("X"))
+    if X_np.shape[1] > 2:
+        from sklearn.decomposition import PCA
+        X_vis = PCA(n_components=2, random_state=42).fit_transform(X_np)
+    else:
+        X_vis = X_np
+
+    st.markdown("### 专家分歧热力图")
+    st.caption("红色：≥50% 专家与共识不一致的区域")
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.scatter(X_vis[:, 0], X_vis[:, 1], c=lbls, cmap="tab10", s=2, alpha=0.3, edgecolors="none")
+    ax.set_title("Cluster Consensus — Disagreement Map", fontsize=10)
+    fig.tight_layout()
+    with st.expander("分歧热力图", expanded=False):
+        st.pyplot(fig)
+    plt.close(fig)
+
+
+def _render_graph_metrics_card(top_metrics: dict, top_params: dict) -> None:
+    """Render Phase 3 graph-aware metrics card."""
+    with st.expander("图结构指标 (Topology-Aware)", expanded=False):
+        cm = st.columns(4)
+        cm[0].metric("图连通一致性", f"{top_metrics.get('graph_connectivity_agreement', 0):.3f}")
+        cm[1].metric("高分歧区域", f"{top_metrics.get('high_disagreement_ratio', 0):.1%}")
+        cm[2].metric("融合专家数", str(top_metrics.get('n_experts_fused', '?')))
+        cm[3].metric("共识K", str(top_metrics.get('k_consensus', '?')))
+        if top_params.get("graph_agreement"):
+            st.caption(f"图连通一致性: {top_params['graph_agreement']:.3f} — "
+                       "越高说明聚类越符合图的邻域结构")
+        if top_params.get("disagreement_ratio", 0) > 0.05:
+            st.warning(
+                f"高分歧区域占比 {top_params['disagreement_ratio']:.1%}。"
+                "这些区域的点在不同专家间聚类归属不一致，"
+                "建议在高分歧区域增加密度算法或图结构算法。"
+            )
 
 
 def _render_hitl_panel(report, supervisor, dataset, prompt, settings) -> None:

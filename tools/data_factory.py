@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import os
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +36,21 @@ DATASET_LABELS = {
     "fashion_mnist": "Fashion-MNIST (70K)",
     "news": "20 Newsgroups 文本",
     "mfeat": "Multiple Features 多视图手写体",
+    # -- 4 classic 2D clustering benchmarks (SIPU + programmatic, 调试保留) --
+    "pathbased": "Pathbased 环形缺口",
+    "square": "Square 嵌套方形",
+    "spiral_sipu": "Spiral 三螺旋线",
+    "half_kernel": "Half-kernel 抛物线边界",
+    # -- Phase 4: 高维真实聚类基准 --
+    "usps": "USPS 手写数字 (256D)",
+    "reuters": "Reuters-21578 文本 (2K-D)",
+    "har": "HAR 人体活动识别 (561D)",
+    "cifar10_raw": "CIFAR-10 原始像素 (3072D)",
+    "cifar10_gap": "CIFAR-10 GAP降维 (64D)",
+    "cifar10_resnet": "CIFAR-10 ResNet18特征 (512D)",
+    "pendigits": "Pendigits 笔迹数字 (16D)",
+    "letter": "Letter 字母识别 (16D)",
+    "coil20": "COIL-20 物体识别 (1024D)",
     "custom": "自定义上传数据",
 }
 
@@ -108,12 +125,25 @@ def infer_dataset_from_prompt(prompt: str) -> str | None:
         "multi_view": ["multi_view", "multi view", "多视图模拟"],
         "iris": ["iris", "鸢尾花", "经典数据"],
         "wine": ["wine", "葡萄酒", "酒"],
+        "pendigits": ["pendigits", "pen digit", "笔迹", "手写笔迹"],
         "digits": ["digits", "手写数字特征", "optdigits"],
+        "letter": ["letter", "字母识别", "字符识别"],
         "mnist": ["mnist", "原始手写体", "图像聚类"],
         "mnist_full": ["mnist full", "mnist_full", "完整mnist", "手写数字全集"],
         "fashion_mnist": ["fashion", "fashion_mnist", "fashion-mnist", "时尚"],
+        "usps": ["usps", "手写数字", "邮政"],
+        "reuters": ["reuters", "路透社", "文本", "reuter"],
+        "har": ["har", "人体活动", "活动识别", "传感器", "加速度"],
         "news": ["news", "newsgroups", "文本聚类", "20news"],
         "mfeat": ["mfeat", "multi-feature", "真实多视图", "多特征"],
+        "pathbased": ["pathbased", "path-based", "path based", "环形", "缺口"],
+        "square": ["square", "squares", "nested square", "嵌套方形", "方块"],
+        "spiral_sipu": ["spiral", "螺旋", "螺旋线"],
+        "half_kernel": ["half-kernel", "half_kernel", "parable", "抛物线", "边界"],
+        "cifar10_gap": ["cifar10 gap", "cifar10_gap", "cifar gap"],
+        "cifar10_resnet": ["cifar10 resnet", "cifar10_resnet", "cifar resnet"],
+        "cifar10_raw": ["cifar10 raw", "cifar10_raw", "cifar raw", "cifar10", "cifar"],
+        "coil20": ["coil20", "coil-20", "coil 20", "物体识别", "obj"],
     }
     for dataset_name, keywords in mapping.items():
         if any(keyword in normalized for keyword in keywords):
@@ -257,6 +287,42 @@ def generate_dataset(
     if dataset_name == "multi_view":  # 模拟多视图
         return _make_simulated_multi_view(n_samples, noise, random_state)
 
+    # 5. SIPU classic 2D clustering benchmarks
+    if dataset_name == "pathbased":
+        return _load_pathbased()
+
+    if dataset_name == "square":
+        return _make_square_dataset(n_samples=800, noise=0.01, random_state=random_state)
+
+    if dataset_name == "spiral_sipu":
+        return _load_spiral_sipu()
+
+    if dataset_name == "half_kernel":
+        return _make_half_kernel_dataset(n_samples=750, noise=0.02, random_state=random_state)
+
+    # 6. Phase 4: high-dimensional real clustering benchmarks
+    if dataset_name == "usps":
+        return _load_usps()
+
+    if dataset_name == "reuters":
+        return _load_reuters()
+
+    if dataset_name == "har":
+        return _load_har()
+
+    if dataset_name in ("cifar10_raw", "cifar10_gap", "cifar10_resnet"):
+        mode = dataset_name.replace("cifar10_", "")
+        return _load_cifar10(feature_mode=mode)
+
+    if dataset_name == "pendigits":
+        return _load_pendigits()
+
+    if dataset_name == "letter":
+        return _load_letter()
+
+    if dataset_name == "coil20":
+        return _load_coil20()
+
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
@@ -330,4 +396,418 @@ def _make_smile_dataset(n_samples: int, noise: float, random_state: int) -> Data
         shape_family="non_convex",
         feature_names=["x1", "x2"],
         metadata={"expected_clusters": 3},
+    )
+
+
+# ==========================================================================
+# SIPU classic 2D clustering benchmark helpers
+# ==========================================================================
+
+_BENCHMARK_CACHE = Path(__file__).resolve().parents[1] / "benchmark_cache"
+_SIPU_BASE_URL = "https://cs.uef.fi/sipu/datasets"
+
+
+def _sipu_cache_path(name: str) -> Path:
+    return _BENCHMARK_CACHE / f"{name}.txt"
+
+
+def _download_sipu(name: str) -> Path:
+    """Download a SIPU .txt dataset into benchmark_cache/ if not present."""
+    cache_path = _sipu_cache_path(name)
+    if cache_path.exists():
+        logger.info(f"SIPU '{name}' 已有缓存: {cache_path}")
+        return cache_path
+    _BENCHMARK_CACHE.mkdir(parents=True, exist_ok=True)
+    url = f"{_SIPU_BASE_URL}/{name}.txt"
+    logger.info(f"正在从 SIPU 下载 '{name}' → {url}")
+    urllib.request.urlretrieve(url, cache_path)
+    logger.info(f"下载完成: {cache_path} ({cache_path.stat().st_size} bytes)")
+    return cache_path
+
+
+# ------------------------------------------------------------------
+# Dataset: Pathbased (SIPU)
+# 300 samples, 2D + labels, 3 classes
+# Shape: a circular ring with a gap + 3 inner high-density clusters
+# ------------------------------------------------------------------
+def _load_pathbased() -> DatasetBundle:
+    path = _download_sipu("pathbased")
+    data = pd.read_csv(path, sep=r"\s+", header=None).values
+    X = data[:, :2].astype(float)
+    y = data[:, 2].astype(int) - 1  # SIPU labels are 1-indexed
+    return DatasetBundle(
+        name="pathbased",
+        display_name=DATASET_LABELS["pathbased"],
+        X=X,
+        y=y,
+        description="Pathbased: 一个带缺口的环形外框 + 3 个高密度内部簇。"
+                    "测试算法对非凸形状和多密度簇的识别能力。",
+        shape_family="non_convex",
+        feature_names=["x1", "x2"],
+        metadata={"expected_clusters": 3, "source": "SIPU", "n_samples": 300},
+    )
+
+
+# ------------------------------------------------------------------
+# Dataset: Spiral (SIPU)
+# 312 samples, 2D + labels, 3 classes
+# Shape: 3 interleaving Archimedean spirals
+# ------------------------------------------------------------------
+def _load_spiral_sipu() -> DatasetBundle:
+    path = _download_sipu("spiral")
+    data = pd.read_csv(path, sep=r"\s+", header=None).values
+    X = data[:, :2].astype(float)
+    y = data[:, 2].astype(int) - 1  # SIPU labels are 1-indexed
+    return DatasetBundle(
+        name="spiral_sipu",
+        display_name=DATASET_LABELS["spiral_sipu"],
+        X=X,
+        y=y,
+        description="Spiral: 三条交错的阿基米德螺旋线。"
+                    "测试基于图/连通性的算法处理复杂流形的能力。",
+        shape_family="manifold",
+        feature_names=["x1", "x2"],
+        metadata={"expected_clusters": 3, "source": "SIPU", "n_samples": 312},
+    )
+
+
+# ------------------------------------------------------------------
+# Dataset: Square / Nested Squares (programmatic)
+# ~800 samples, 2D + labels, 5 classes
+# Shape: outer square frame + 4 inner square blocks in 2×2 grid
+# ------------------------------------------------------------------
+def _make_square_dataset(
+    n_samples: int = 800, noise: float = 0.01, random_state: int = 42
+) -> DatasetBundle:
+    rng = np.random.default_rng(random_state)
+    # Outer square frame (4 segments with a gap in top side)
+    frame_n = n_samples // 3
+    inner_n = (n_samples - frame_n) // 4
+    pieces: list[np.ndarray] = []
+    labels_list: list[np.ndarray] = []
+
+    def _line_segment(start, end, n, noise_std):
+        t = rng.uniform(0, 1, n).reshape(-1, 1)
+        pts = start + t * (end - start)
+        return pts + rng.normal(0, noise_std, pts.shape)
+
+    # Outer frame: bottom, right, top (with gap), left
+    frame_pts = [
+        _line_segment(np.array([-3, -3]), np.array([3, -3]), frame_n // 4, noise * 4),
+        _line_segment(np.array([3, -3]), np.array([3, 3]), frame_n // 4, noise * 4),
+        _line_segment(np.array([-1.5, 3]), np.array([1.5, 3]), frame_n // 4, noise * 4),  # top with gap
+        _line_segment(np.array([-3, -3]), np.array([-3, 3]), frame_n // 4, noise * 4),
+    ]
+    pieces.extend(frame_pts)
+    labels_list.extend([np.full(len(p), 0) for p in frame_pts])
+
+    # 4 inner square blocks centred at (±1.5, ±1.5)
+    inner_centers = [(-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5)]
+    for i, (cx, cy) in enumerate(inner_centers):
+        block = rng.uniform(low=-0.6, high=0.6, size=(inner_n, 2))
+        block[:, 0] += cx
+        block[:, 1] += cy
+        block += rng.normal(0, noise * 2, block.shape)
+        pieces.append(block)
+        labels_list.append(np.full(inner_n, i + 1))
+
+    X = np.vstack(pieces)
+    y = np.concatenate(labels_list)
+    return DatasetBundle(
+        name="square",
+        display_name=DATASET_LABELS["square"],
+        X=X.astype(float),
+        y=y.astype(int),
+        description="Square: 外层方形边框(顶部有缺口) + 4 个内嵌方块（2×2 排列）。"
+                    "测试算法在不规则形状、间隙和非高斯分布上的鲁棒性。",
+        shape_family="non_convex",
+        feature_names=["x1", "x2"],
+        metadata={"expected_clusters": 5},
+    )
+
+
+# ------------------------------------------------------------------
+# Dataset: Half-kernel / Parabola (programmatic)
+# ~750 samples, 2D + labels, 4 classes
+# Shape: parabolic boundary + 3 inner Gaussian clusters
+# ------------------------------------------------------------------
+def _make_half_kernel_dataset(
+    n_samples: int = 750, noise: float = 0.02, random_state: int = 42
+) -> DatasetBundle:
+    rng = np.random.default_rng(random_state)
+    # 3 inner Gaussian clusters
+    n_inner = 3 * (n_samples // 5)
+    inner_labels = rng.integers(0, 3, n_inner)
+    centers = np.array([[-1.0, -0.5], [1.0, -0.5], [0.0, 1.0]])
+    X_inner = rng.normal(0, 0.25, (n_inner, 2)) + centers[inner_labels]
+
+    # Parabolic boundary: y = x² - 2, sampling along the curve
+    n_boundary = n_samples - n_inner
+    x_boundary = rng.uniform(-2.5, 2.5, n_boundary)
+    y_boundary = x_boundary ** 2 - 1.8
+    X_boundary = np.column_stack([x_boundary, y_boundary])
+    X_boundary += rng.normal(0, noise * 3, X_boundary.shape)
+
+    X = np.vstack([X_inner, X_boundary])
+    y = np.concatenate([inner_labels, np.full(n_boundary, 3)])
+    return DatasetBundle(
+        name="half_kernel",
+        display_name=DATASET_LABELS["half_kernel"],
+        X=X.astype(float),
+        y=y.astype(int),
+        description="Half-kernel: 抛物线 y=x² 噪声边界 + 3 个高斯内簇。"
+                    "测试算法对曲线边界和多密度的区分能力。",
+        shape_family="non_convex",
+        feature_names=["x1", "x2"],
+        metadata={"expected_clusters": 4},
+    )
+
+
+# ==========================================================================
+# Phase 4: High-dimensional real clustering benchmark loaders
+# ==========================================================================
+
+
+def _load_usps() -> DatasetBundle:
+    """USPS handwritten digits. 256 features, 9298 samples, 10 classes."""
+    logger.info("正在从 OpenML 加载 USPS 数据集...")
+    data = fetch_openml("usps", version=1, parser="auto")
+    X = data.data.astype(float)
+    y = data.target.astype(int)
+    return DatasetBundle(
+        name="usps",
+        display_name=DATASET_LABELS["usps"],
+        X=X,
+        y=y,
+        description="USPS 手写数字数据集：256 维灰度像素特征，9298 样本，10 类。",
+        shape_family="spherical",
+        feature_names=[f"px{i}" for i in range(256)],
+        metadata={"expected_clusters": 10, "source": "OpenML/USPS", "n_samples": len(X)},
+    )
+
+
+def _load_reuters() -> DatasetBundle:
+    """Reuters-21578 TF-IDF text clustering. ~2000 features, 4 classes."""
+    logger.info("正在加载 Reuters-21578 数据集...")
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    try:
+        import nltk
+        nltk_data_dir = os.path.join(os.path.expanduser("~"), "nltk_data")
+        nltk.data.path.append(nltk_data_dir)
+        nltk.download("reuters", quiet=True)
+        nltk.download("punkt", quiet=True)
+        from nltk.corpus import reuters as _reuters
+        fileids = _reuters.fileids()
+        categories = _reuters.categories()
+        target_cats = sorted(categories)[:4]
+        docs, labels = [], []
+        for fid in fileids:
+            cat_set = set(_reuters.categories(fid))
+            matched = [c for c in target_cats if c in cat_set]
+            if matched:
+                docs.append(" ".join(_reuters.words(fid)))
+                labels.append(target_cats.index(matched[0]))
+    except Exception:
+        logger.warning("NLTK Reuters 加载失败，使用 sklearn fetch_openml 回退...")
+        data = fetch_openml("reuters-21578", version=1, parser="auto")
+        X_raw = data.data
+        y_raw = data.target
+        if hasattr(X_raw, "toarray"):
+            X_raw = X_raw.toarray()
+        X = X_raw.astype(float)
+        y = pd.factorize(y_raw)[0]
+        return DatasetBundle(
+            name="reuters",
+            display_name=DATASET_LABELS["reuters"],
+            X=X,
+            y=y.astype(int),
+            description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，~10000 样本，4 类。",
+            shape_family="sparse",
+            feature_names=[f"word_{i}" for i in range(X.shape[1])],
+            metadata={"expected_clusters": 4, "source": "NLTK/Reuters",
+                      "n_samples": len(X)},
+        )
+
+    vectorizer = TfidfVectorizer(max_features=2000, stop_words="english")
+    X = vectorizer.fit_transform(docs).toarray()
+    y = np.array(labels, dtype=int)
+    return DatasetBundle(
+        name="reuters",
+        display_name=DATASET_LABELS["reuters"],
+        X=X.astype(float),
+        y=y,
+        description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，~10000 样本，4 类。",
+        shape_family="sparse",
+        feature_names=vectorizer.get_feature_names_out().tolist(),
+        metadata={"expected_clusters": 4, "source": "NLTK/Reuters", "n_samples": len(X)},
+    )
+
+
+def _load_har() -> DatasetBundle:
+    """Human Activity Recognition. 561 features, 10299 samples, 6 classes."""
+    logger.info("正在从 OpenML 加载 HAR 数据集...")
+    data = fetch_openml("har", version=1, parser="auto")
+    X = data.data.astype(float)
+    y = data.target
+    y = pd.factorize(y)[0]
+    return DatasetBundle(
+        name="har",
+        display_name=DATASET_LABELS["har"],
+        X=X,
+        y=y.astype(int),
+        description="HAR 人体活动识别：561 维传感器时序特征，10299 样本，6 类。",
+        shape_family="spherical",
+        feature_names=[f"feat_{i}" for i in range(561)],
+        metadata={"expected_clusters": 6, "source": "UCI/HAR", "n_samples": len(X)},
+    )
+
+
+def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
+    """CIFAR-10 with three feature modes: raw(3072D) / gap(64D) / resnet18(512D)."""
+    logger.info("正在加载 CIFAR-10 数据集 (mode=%s)...", feature_mode)
+    try:
+        import torch
+        import torchvision
+        import torchvision.transforms as T
+    except ImportError:
+        raise ImportError(
+            "CIFAR-10 需要 PyTorch + torchvision。请安装: pip install torch torchvision"
+        )
+
+    if feature_mode in ("gap", "resnet18"):
+        import torch.nn as nn
+
+    from sklearn.preprocessing import LabelEncoder
+
+    transform = T.Compose([T.ToTensor()])
+    trainset = torchvision.datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
+    testset = torchvision.datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
+    images = np.concatenate(
+        [trainset.data, testset.data], axis=0
+    ).astype(np.float32)
+    labels_raw = np.concatenate([trainset.targets, testset.targets], axis=0)
+    y = LabelEncoder().fit_transform(labels_raw.astype(str))
+
+    if feature_mode == "raw":
+        X = images.reshape(images.shape[0], -1)
+        feat_names = [f"px{i}" for i in range(3072)]
+        n_feat = 3072
+    elif feature_mode == "gap":
+        # 8x8 global average pooling on each channel
+        X_gap = images.reshape(images.shape[0], 3, 32, 32)
+        pooled = nn.AvgPool2d(kernel_size=4, stride=4)(torch.from_numpy(X_gap))
+        X = pooled.reshape(images.shape[0], -1).numpy()
+        n_feat = X.shape[1]
+        feat_names = [f"gap_{i}" for i in range(n_feat)]
+    elif feature_mode == "resnet18":
+        # Pre-trained ResNet-18 features (penultimate layer)
+        try:
+            from torchvision.models import resnet18, ResNet18_Weights
+        except ImportError:
+            from torchvision.models import resnet18
+            ResNet18_Weights = None
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        weights = ResNet18_Weights.IMAGENET1K_V1 if ResNet18_Weights else None
+        model = resnet18(weights=weights)
+        model = nn.Sequential(*list(model.children())[:-1])
+        model = model.to(device).eval()
+        n_feat = 512
+        feat_names = [f"resnet_{i}" for i in range(n_feat)]
+
+        # Batch inference
+        transform_resnet = T.Compose([T.Resize(224), T.ToTensor(),
+                                       T.Normalize(mean=[0.485, 0.456, 0.406],
+                                                   std=[0.229, 0.224, 0.225])])
+        batch_size = 512
+        features_list = []
+        for i in range(0, len(images), batch_size):
+            batch_imgs = images[i: i + batch_size]
+            batch_tensors = torch.stack(
+                [transform_resnet(T.ToPILImage()(img.transpose(1, 2, 0).astype(np.uint8)))
+                 for img in batch_imgs]
+            ).to(device)
+            with torch.no_grad():
+                feats = model(batch_tensors).squeeze(-1).squeeze(-1)
+            features_list.append(feats.cpu().numpy())
+        X = np.concatenate(features_list, axis=0)
+    else:
+        raise ValueError(f"Unknown CIFAR-10 feature_mode: {feature_mode}")
+
+    return DatasetBundle(
+        name=f"cifar10_{feature_mode}",
+        display_name=DATASET_LABELS[f"cifar10_{feature_mode}"],
+        X=X.astype(float),
+        y=y.astype(int),
+        description=f"CIFAR-10 ({feature_mode} 特征): {n_feat} 维，60000 样本，10 类。",
+        shape_family="manifold",
+        feature_names=feat_names,
+        metadata={"expected_clusters": 10, "source": "torchvision/CIFAR-10",
+                  "n_samples": len(X), "feature_mode": feature_mode},
+    )
+
+
+def _load_pendigits() -> DatasetBundle:
+    """Pendigits pen-based handwritten digits. 16 features, 10992 samples, 10 classes."""
+    logger.info("正在从 OpenML 加载 Pendigits 数据集...")
+    data = fetch_openml("pendigits", version=1, parser="auto")
+    X = data.data.astype(float)
+    y = data.target
+    y = pd.factorize(y)[0]
+    return DatasetBundle(
+        name="pendigits",
+        display_name=DATASET_LABELS["pendigits"],
+        X=X,
+        y=y.astype(int),
+        description="Pendigits 笔迹手写数字：16 维笔划特征，10992 样本，10 类。",
+        shape_family="spherical",
+        feature_names=[f"feat_{i}" for i in range(16)],
+        metadata={"expected_clusters": 10, "source": "UCI/Pendigits", "n_samples": len(X)},
+    )
+
+
+def _load_letter() -> DatasetBundle:
+    """Letter Recognition. 16 features, 20000 samples, 26 classes."""
+    logger.info("正在从 OpenML 加载 Letter Recognition 数据集...")
+    data = fetch_openml("letter", version=1, parser="auto")
+    X = data.data.astype(float)
+    y = data.target
+    y = pd.factorize(y)[0]
+    return DatasetBundle(
+        name="letter",
+        display_name=DATASET_LABELS["letter"],
+        X=X,
+        y=y.astype(int),
+        description="Letter 字母识别：16 维像素统计特征，20000 样本，26 类。",
+        shape_family="spherical",
+        feature_names=[f"feat_{i}" for i in range(16)],
+        metadata={"expected_clusters": 26, "source": "UCI/Letter", "n_samples": len(X)},
+    )
+
+
+def _load_coil20() -> DatasetBundle:
+    """COIL-20 object recognition. ~1024 features (HOG/pixel), 1440 samples, 20 classes."""
+    logger.info("正在从 OpenML 加载 COIL-20 数据集...")
+    try:
+        data = fetch_openml("coil20", version=1, parser="auto")
+    except Exception:
+        # Fallback: use sklearn's fetch_openml with cpu-friendly settings
+        data = fetch_openml("COIL-20", version=1, parser="auto")
+    X = data.data
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    X = X.astype(float)
+    y = data.target
+    y = pd.factorize(y)[0]
+    return DatasetBundle(
+        name="coil20",
+        display_name=DATASET_LABELS["coil20"],
+        X=X,
+        y=y.astype(int),
+        description="COIL-20 物体识别：~1024 维像素/HOG 特征，1440 样本，20 个物体类别。",
+        shape_family="manifold",
+        feature_names=[f"feat_{i}" for i in range(X.shape[1])],
+        metadata={"expected_clusters": 20, "source": "Columbia/COIL-20",
+                  "n_samples": len(X)},
     )

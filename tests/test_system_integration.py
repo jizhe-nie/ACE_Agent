@@ -14,7 +14,6 @@ Coverage:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -57,8 +56,6 @@ class TestImportChain:
         from ACE_Agent.agent_core.schemas import (
             AlgorithmRunResult,
             DatasetBundle,
-            SupervisorReport,
-            RoutingDecision,
         )
         # Verify we can construct key schemas
         ds = DatasetBundle(name="test", X=np.array([[1, 2], [3, 4]]), y=None)
@@ -74,7 +71,7 @@ class TestImportChain:
         assert result.algorithm_name == "KMeans"
 
     def test_import_llm_client(self) -> None:
-        from ACE_Agent.tools.llm_client import LLMSettings, UniversalLLMClient
+        from ACE_Agent.tools.llm_client import LLMSettings
         settings = LLMSettings(
             provider="DeepSeek",
             base_url="http://localhost",
@@ -315,12 +312,14 @@ class TestSelfCorrectionLoop:
 
         ds = DatasetBundle(name="test", X=np.array([[1, 2], [3, 4], [5, 6], [7, 8]]), y=None)
 
-        with patch.object(type(expert), "_generate_code", fake_generate_code):
+        with (
+            patch.object(type(expert), "_generate_code", fake_generate_code),
+            patch.object(expert, "sandbox") as mock_sb,
+            patch.object(UniversalLLMClient, "chat_completion", fake_chat),
+        ):
             # sandbox is an instance attribute, not class — use patch.object on instance
-            with patch.object(expert, "sandbox") as mock_sb:
-                mock_sb.execute = self._fake_sandbox_execute
-                with patch.object(UniversalLLMClient, "chat_completion", fake_chat):
-                    results = expert.execute_with_self_correction(ds, "test prompt", self._settings())
+            mock_sb.execute = self._fake_sandbox_execute
+            results = expert.execute_with_self_correction(ds, "test prompt", self._settings())
         assert len(results) == 1
         assert results[0].algorithm_name == "KMeans"
         assert results[0].metrics["score"] == 0.9
@@ -343,14 +342,16 @@ class TestSelfCorrectionLoop:
 
         ds = DatasetBundle(name="test", X=np.array([[1, 2], [3, 4]]), y=None)
 
-        with patch.object(type(expert), "_generate_code", fake_generate_code):
-            with patch.object(expert, "sandbox") as mock_sb:
-                mock_sb.execute = self._fake_sandbox_execute
-                with patch.object(UniversalLLMClient, "chat_completion", fake_chat):
-                    expert.execute_with_self_correction(
-                        ds, "test", self._settings(),
-                        constraints={"reference_labels": [0, 1]},
-                    )
+        with (
+            patch.object(type(expert), "_generate_code", fake_generate_code),
+            patch.object(expert, "sandbox") as mock_sb,
+            patch.object(UniversalLLMClient, "chat_completion", fake_chat),
+        ):
+            mock_sb.execute = self._fake_sandbox_execute
+            expert.execute_with_self_correction(
+                ds, "test", self._settings(),
+                constraints={"reference_labels": [0, 1]},
+            )
         assert len(captured_constraints) == 1
         assert captured_constraints[0]["reference_labels"] == [0, 1]
 
@@ -399,7 +400,6 @@ class TestEnsembleIntegration:
         r2.labels = r2.labels[:100]
 
         # Fix labels length
-        rng = np.random.default_rng(42)
         r1_labels = [0] * 33 + [1] * 34 + [2] * 33
         r2_labels = [0] * 33 + [1] * 34 + [2] * 33
         r1.labels = r1_labels

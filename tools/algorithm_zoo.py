@@ -60,7 +60,7 @@ class AlgorithmZoo:
                 "name": "SpectralClustering",
                 "library": "sklearn",
                 "category": "topology",
-                "params": {"n_clusters": "expected_clusters", "random_state": 42, "affinity": "nearest_neighbors"},
+                "params": {"n_clusters": "expected_clusters", "random_state": 42, "affinity": "nearest_neighbors", "n_neighbors": 5},
                 "doc": "Clustering based on graph Laplacian eigenvalues.",
                 "max_samples": 5000,  # O(N²) affinity matrix
             },

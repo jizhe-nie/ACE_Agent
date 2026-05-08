@@ -666,7 +666,6 @@ class DimensionExpert(BaseExpert):
 
         # Conv-AE vs MLP AE backend selection
         selflabel_import = ""
-        selflabel_extra = ""
 
         if is_image and original_shape and len(original_shape) == 2:
             img_h, img_w = original_shape
@@ -674,8 +673,8 @@ class DimensionExpert(BaseExpert):
             ae_import = "from ACE_Agent.tools.ae_pipeline import conv_ae_kmeans_pipeline as _ae_pipe"
             dec_import = "from ACE_Agent.tools.dec_pipeline import conv_dec_pipeline as _dec_pipe"
             selflabel_import = "from ACE_Agent.tools.ae_pipeline import conv_selflabel_pipeline as _sl_pipe"
-            ae_extra = ", input_size=%d, base_filters=32" % input_size
-            dec_extra = ", input_size=%d, base_filters=32" % input_size
+            ae_extra = f", input_size={input_size}, base_filters=32"
+            dec_extra = f", input_size={input_size}, base_filters=32"
             # Update decisions with conv-specific defaults
             for key in ("ae_kmeans", "dec", "selflabel"):
                 pipe = decisions.setdefault("pipelines", {}).setdefault(key, {})

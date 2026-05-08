@@ -413,7 +413,7 @@ def build_conv_autoencoder(
     input_size: int = 28,
     base_filters: int = 32,
     dropout: float = 0.1,
-) -> "torch.nn.Module":
+) -> torch.nn.Module:
     """Build a Conv2d/ConvTranspose2d autoencoder for image data.
 
     Pads input to the next multiple of 8 (e.g. 28→32) so the
@@ -446,7 +446,6 @@ def build_conv_autoencoder(
     dropout : float
         Dropout2d probability after each encoder ReLU.
     """
-    import torch
     import torch.nn as nn
     import torch.nn.functional as F  # noqa: N812
 
@@ -501,7 +500,7 @@ def build_conv_autoencoder(
             self._input_channels = input_channels
             self._flat_dim = input_channels * input_size * input_size
 
-        def forward(self, x: "torch.Tensor") -> "tuple[torch.Tensor, torch.Tensor]":
+        def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
             # x: (N, C*H*W) flat → reshape to (N, C, H, W)
             x_2d = x.view(-1, self._input_channels, self._input_size, self._input_size)
             # Reflection-pad to divisible-by-8 size (avoids zero-pad edge artifacts)
@@ -518,9 +517,9 @@ def build_conv_autoencoder(
 
 
 def _augment_batch(
-    x: "torch.Tensor", input_size: int, noise_std: float, device: str,
+    x: torch.Tensor, input_size: int, noise_std: float, device: str,
     translate: bool = True,
-) -> "torch.Tensor":
+) -> torch.Tensor:
     """Apply random ±2px translation + Gaussian noise to a flat batch.
 
     When *translate* is False, only Gaussian noise is added (no translation).
@@ -543,8 +542,8 @@ def _augment_batch(
 
 
 def _nt_xent_loss(
-    z_a: "torch.Tensor", z_b: "torch.Tensor", temperature: float = 0.5
-) -> "torch.Tensor":
+    z_a: torch.Tensor, z_b: torch.Tensor, temperature: float = 0.5
+) -> torch.Tensor:
     """NT-Xent (SimCLR) contrastive loss between two augmented views.
 
     Normalises both views, constructs a 2N×2N similarity matrix, and
@@ -564,7 +563,7 @@ def _nt_xent_loss(
 
 
 def train_conv_ae(
-    model: "torch.nn.Module",
+    model: torch.nn.Module,
     X: np.ndarray,
     *,
     epochs: int = 150,
@@ -742,7 +741,6 @@ def conv_ae_kmeans_pipeline(
     from sklearn.metrics import silhouette_score
 
     X_scaled = _scale_data(X, normalize)
-    n_features = X_scaled.shape[1]
 
     if latent_dim <= 0:
         latent_dim = 32
@@ -861,12 +859,12 @@ def conv_selflabel_pipeline(
        d. Stop if label change rate < 0.1% or sil decreases 2×
     4. Return best labels across all iterations
     """
+
     import torch
     import torch.nn.functional as F
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.mixture import GaussianMixture
     from sklearn.metrics import silhouette_score
-    import copy
+    from sklearn.mixture import GaussianMixture
+    from torch.utils.data import DataLoader, TensorDataset
 
     if device == "auto":
         try:

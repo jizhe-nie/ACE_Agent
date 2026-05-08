@@ -22,6 +22,10 @@ class CentroidExpert(BaseExpert):
             '- 完成后必须通过 `artifacts["算法名"] = {"labels": ..., "metrics": {"score": float}, "plot_path": "..."}` 写入结果。\n'
             "\n"
             "你的职责范围：KMeans, MiniBatchKMeans, GaussianMixture (GMM)。\n"
+            "⚠️ 沙箱预注入说明：KMeans, GaussianMixture, StandardScaler, silhouette_score 等均已预注入，"
+            "可直接使用无需 import。若必须显式 import：\n"
+            "- KMeans, MiniBatchKMeans 来自 sklearn.cluster\n"
+            "- GaussianMixture 来自 **sklearn.mixture**（非 sklearn.cluster！）\n"
             "任务要求：\n"
             f"1. 分析用户指令：'{prompt}'\n"
             "2. 如果用户指定了你职责范围内的算法，必须优先实现它。\n"

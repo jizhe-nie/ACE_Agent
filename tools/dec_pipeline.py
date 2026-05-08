@@ -282,9 +282,9 @@ def _soft_assignment(
 
 
 def _target_distribution(
-    q: "torch.Tensor",
+    q: torch.Tensor,
     conf_threshold: float = 0.0,
-) -> "torch.Tensor":
+) -> torch.Tensor:
     """Auxiliary target distribution P derived from Q.
 
     p_ij = (q_ij² / f_j) / Σ_j'(q_ij'² / f_j')
@@ -432,7 +432,7 @@ def dec_train(
 
     # ---- Phase 2: initialise cluster centres via KMeans ---------------------
     km = KMeans(n_clusters=k, random_state=42, n_init=20)
-    km_labels = km.fit_predict(latents_np)
+    km.fit_predict(latents_np)
     centres_init = torch.tensor(km.cluster_centers_, dtype=torch.float32, device=device)
 
     # trainable cluster centres
@@ -470,7 +470,6 @@ def dec_train(
     p_full = _target(q_full).detach()
     prev_labels = q_full.argmax(dim=1).cpu().numpy()
 
-    best_labels = prev_labels.copy()
     best_loss = float("inf")
     best_model_state = copy.deepcopy(model.state_dict())
     best_centres = centres.data.clone()
@@ -541,7 +540,6 @@ def dec_train(
         p_full = _target(q_full).detach()
 
         if delta < tol and epoch >= 10:
-            best_labels = new_labels
             break
 
         prev_labels = new_labels
@@ -549,7 +547,6 @@ def dec_train(
         total = epoch_kl + epoch_recon * gamma
         if total < best_loss:
             best_loss = total
-            best_labels = new_labels
             best_model_state = copy.deepcopy(model.state_dict())
             best_centres = centres.data.clone()
 
@@ -871,7 +868,6 @@ def conv_dec_pipeline(
         return _sklearn_fallback(X, k, latent_dim, normalize)
 
     X_s = _scale_data(X, normalize)
-    n_features = X_s.shape[1]
 
     if device == "auto":
         try:
@@ -970,13 +966,13 @@ def conv_dec_pipeline(
 # ========================================================================
 
 def _gmm_responsibilities(
-    z: "torch.Tensor",
-    means: "torch.Tensor",
-    cov_logits: "torch.Tensor",
-    weight_logits: "torch.Tensor",
+    z: torch.Tensor,
+    means: torch.Tensor,
+    cov_logits: torch.Tensor,
+    weight_logits: torch.Tensor,
     temperature: float = 2.0,
     min_std: float = 0.3,
-) -> "torch.Tensor":
+) -> torch.Tensor:
     """GMM responsibilities (soft assignments) Q, temperature-scaled.
 
     q_ik ∝ exp( log(π_k · N(z_i|μ_k, Σ_k)) / τ )
@@ -990,10 +986,10 @@ def _gmm_responsibilities(
     q : (N, K) normalised over K (Σ_k q_ik = 1).
     """
     import math
+
     import torch.nn.functional as F
 
     D = z.shape[1]
-    K = means.shape[0]
 
     # Softplus-style clamping: σ ∈ [min_std, ∞)
     cov_diag = F.softplus(cov_logits) + min_std ** 2     # (K, D) ≥ min_std²
@@ -1012,7 +1008,7 @@ def _gmm_responsibilities(
 
 
 def gmm_cluster_train(
-    model: "torch.nn.Module",
+    model: torch.nn.Module,
     X: np.ndarray,
     k: int,
     *,
@@ -1059,8 +1055,8 @@ def gmm_cluster_train(
         Epochs over which gamma linearly increases from 0 to its final value.
     """
     import torch.nn.functional as F
-    from torch.utils.data import DataLoader, TensorDataset
     from sklearn.metrics import silhouette_score
+    from torch.utils.data import DataLoader, TensorDataset
 
     X_s = _scale_data(X, normalize)
     X_t = torch.tensor(X_s, dtype=torch.float32)
@@ -1088,7 +1084,7 @@ def gmm_cluster_train(
     # KMeans init for means
     from sklearn.cluster import KMeans
     km = KMeans(n_clusters=k, random_state=42, n_init=20)
-    km_labels = km.fit_predict(z0_np)
+    km.fit_predict(z0_np)
     means_init = torch.tensor(km.cluster_centers_, dtype=torch.float32, device=device)
 
     # GMM parameters
@@ -1267,10 +1263,8 @@ def _gmm_assign_labels(
     Assigns each sample to the cluster k that maximises
     log π_k + log N(z_i | μ_k, diag(σ²_k)).
     """
-    from scipy.special import logsumexp
 
     D = z.shape[1]
-    K = means.shape[0]
 
     diff = z[:, None, :] - means[None, :, :]          # (N, K, D)
     sq_maha = ((diff ** 2) / cov_diag[None, :, :]).sum(axis=2)  # (N, K)

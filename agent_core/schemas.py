@@ -45,6 +45,8 @@ class ProfileReport:
     non_convex_hint: bool
     noise_sensitive_hint: bool
     expected_clusters: int | None = None
+    structure_class: str = "generic"  # Phase 3: spherical/non_convex/manifold/graph_connected
+    geodesic_distortion: float | None = None  # Phase 3: Euclidean-vs-geodesic distortion
     notes: list[str] = field(default_factory=list)
 
 

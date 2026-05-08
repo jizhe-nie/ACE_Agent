@@ -127,7 +127,7 @@ class TestBenchmarkConfig:
     def test_defaults(self) -> None:
         """Default config has sensible values."""
         c = BenchmarkConfig()
-        assert len(c.datasets) == 7
+        assert len(c.datasets) == 11  # BENCHMARK_FULL: 11 high-dim real datasets
         assert c.experts == ["zoo"]
         assert c.n_samples == 480
         assert c.offline_mode is False
