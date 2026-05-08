@@ -37,8 +37,8 @@ class TestImportChain:
     def test_import_expert_registry(self) -> None:
         from ACE_Agent.expert_sub_agents import build_expert_registry
         registry = build_expert_registry()
-        assert len(registry) == 6, f"Expected 6 experts, got {len(registry)}: {list(registry.keys())}"
-        for key in ["centroid", "topology", "zoo", "critic", "dimension", "ensemble"]:
+        assert len(registry) == 7, f"Expected 7 experts, got {len(registry)}: {list(registry.keys())}"
+        for key in ["centroid", "topology", "zoo", "critic", "dimension", "ensemble", "graph"]:
             assert key in registry, f"Missing expert: {key}"
 
     def test_import_supervisor(self) -> None:
@@ -46,7 +46,7 @@ class TestImportChain:
         sv = ACESupervisor()
         assert sv.router is not None
         assert sv.knowledge_engine is not None
-        assert len(sv.experts) == 6
+        assert len(sv.experts) == 7
 
     def test_import_router(self) -> None:
         from ACE_Agent.agent_core.router import MasterRouter

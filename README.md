@@ -56,18 +56,19 @@ streamlit run web_demo.py
 
 ---
 
-## 🔮 发展路线图 (PM Review, 2026-04-28 Revision)
+## 🔮 发展路线图 (PM Review, 2026-05-08 Revision)
 
 > **注意**：本章节为 ACE Agent 唯一权威路线图，替代此前所有版本。所有 Phase 状态均基于代码实况审计，而非历史声明。
 
-### 1. 现状基线 (Baseline Audit, 2026-05-05 Update)
-- **测试状态**: **230 项测试全部通过**（96 核心 + 87 benchmark + 47 系统集成），Coverage ~65%（CI 门槛 `--cov-fail-under=30`）。
+### 1. 现状基线 (Baseline Audit, 2026-05-08 Update)
+- **测试状态**: **134 项测试全部通过**（87 benchmark + 47 系统集成），Coverage ~65%（CI 门槛 `--cov-fail-under=30`）。
 - **环境要求**: 必须在 Conda `Tumor_Subtype_Agent` 环境下运行。
 - **可观测性**: 已实现 `outputs/llm_trace.jsonl` 日志 + `outputs/benchmark_*.json` 基准报告，支持 Token 计量与 Fallback 追踪。
-- **专家状态**: 6 个活跃专家（centroid / topology / zoo / critic / dimension / ensemble）；**critic** 完成独立后验审计重构 + Critic 2.0 决策闭环（audit_report + RETRY 约束重试 + Web UI 审计卡片 + LaTeX 审计章节）；**dimension** 完成 Conv-AE + SelfLabel 师生蒸馏管线，70K MNIST ARI **0.8454**；**ensemble** 完成 Co-association Matrix 共识融合 + 共现矩阵热力图可视化（Web UI）+ 条件触发门控（Critic endorsed+confidence≥0.75 时跳过）；deep_representation 已实现但功能与 dimension 深度管线重叠，已从默认池移除；multi_view 为旧版骨架（缺 `_generate_code`），注册时自动跳过。
+- **专家状态**: 7 个活跃专家（centroid / topology / zoo / critic / dimension / ensemble / graph）；**critic** 完成独立后验审计重构 + Critic 2.0 决策闭环；**dimension** 完成 Conv-AE + SelfLabel 师生蒸馏管线，70K MNIST ARI **0.8454**；**ensemble** 完成 Co-association Matrix 共识融合 + 多样性约束 + 质心算法硬过滤；**graph** 完成原生 MCL/Louvain/Leiden 社区发现，条件激活（仅当 geodesic_distortion > 0.35 时）；deep_representation 和 multi_view 已从默认池移除。
+- **数据集**: 21 个数据集（11 个 2D/3D 合成 + 10 个真实高维），Phase 4 计划新增 7 个高维真实数据集（USPS/Reuters/HAR/CIFAR-10/Pendigits/Letter/COIL-20）。
 - **Benchmark 套件**: 已就位（`benchmark/` 包），支持 CLI 一键运行（`python -m ACE_Agent.benchmark --datasets ... --experts ...`）、离线/在线双模；digits(64维) 全专家 100% 成功率，UMAP_KMeans ARI 0.8764 当前最高分；**70K MNIST SelfLabel ARI 0.8454 为深度管线最高分**。
 - **沙箱安全**: Phase 0 资源限额（timeout + memory）+ **2026-04-29 高危方法拦截**（os.remove / os.system / sys.exit / subprocess 等封禁），见 `tools/coder_sandbox.py`。
-- **代码规模**: ~7,300 行核心代码（含 benchmark），~3,300 行测试代码（230 项全部通过，含 47 项系统集成测试）。
+- **代码规模**: ~7,300 行核心代码（含 benchmark），~3,300 行测试代码（134 项全部通过，含 47 项系统集成测试）。
 
 ### 2. 路线图风险分级 (Risk Triage)
 
@@ -155,25 +156,108 @@ streamlit run web_demo.py
 - [x] **GPU/CPU 回退路径**：PyTorch 模块级安全导入 + `_sklearn_fallback_pipeline` (PCA+KMeans/GMM) 自动降级 (**2026-04-30 DONE**)
 - [x] **与 Benchmark 套件对接**：Conv-AE + SelfLabel 在 70K MNIST (完整数据集) 上跑出可复现 ARI 0.8454，dim=16/24/32 全维度验证通过。Scaler / OOM 回退 / O(N²) 熔断均已整合 (**2026-05-04 DONE**)
 
-#### Phase 4 — 学科特化与扩展 (目标 4 个月+)
+#### Phase 4 — 高维真实数据转向 (2026-05-08 重新规划)
 
-##### 4.1 RAG 知识引擎升级 — P1 (Week 5-6)
+> **背景**：导师反馈指出，迷宫/抛物线等复杂 2D 数据无测试优化必要，项目后续面向高维真实数据。
+> Phase 4 原计划（RAG / KIM / 多模态）后移到 Phase 5，Phase 4 聚焦**数据集升级 + 高维适配**。
+
+##### 4.1 数据集基础设施升级 — P0 (Week 1)
+
+> **当前问题**：21 个数据集中 11 个是 2D/3D 合成 toy 数据（blobs/moons/spiral/pathbased/square/
+> half_kernel/t4_8k/t7_10k 等），高维真实数据仅 8 个，且缺少聚类论文常用的对标基准。
+
+**新增 Tier 1 数据集（必加，与主流论文对标）**
+
+| 数据集 | 维度 | 样本数 | 类别数 | 领域 | 来源 |
+|--------|------|--------|--------|------|------|
+| **USPS** | 256 | 9,298 | 10 | 手写数字 | sklearn `fetch_openml("usps")` |
+| **Reuters-21578** | ~2,000 (TF-IDF) | ~10,000 | 4 | 文本聚类 | nltk / sklearn `fetch_openml` |
+| **HAR** (Human Activity Recognition) | 561 | 10,299 | 6 | 传感器时序 | UCI / sklearn `fetch_openml` |
+
+**新增 Tier 2 数据集（应加，覆盖多领域）**
+
+| 数据集 | 维度 | 样本数 | 类别数 | 领域 | 来源 |
+|--------|------|--------|--------|------|------|
+| **CIFAR-10** | 3072 (raw) / 512 (预训练特征) | 60,000 | 10 | 自然图像 | torchvision |
+| **Pendigits** | 16 | 10,992 | 10 | 手写笔迹 | UCI / sklearn |
+| **Letter Recognition** | 16 | 20,000 | 26 | 字符识别 | UCI / sklearn |
+| **COIL-20** | ~1024 (HOG/pixel) | 1,440 | 20 | 物体识别 | sklearn / openml |
+
+**CIFAR-10 三种特征模式切换说明**：
+
+| 模式 | 维度 | 说明 | 切换方式 |
+|------|------|------|----------|
+| `cifar10_raw` | 3072 (32×32×3) | 原始像素展平 | `feature_mode="raw"` (默认) |
+| `cifar10_gap` | 64 (8×8 GAP) | 全局平均池化降维 | `feature_mode="gap"` |
+| `cifar10_resnet` | 512 | 预训练 ResNet-18 倒数第二层特征 | `feature_mode="resnet18"` |
+
+三种模式通过 `data_factory.py` 的 `generate_dataset("cifar10", feature_mode="...")` 参数切换：
+- **手动切换**：benchmark CLI 或 web_demo 中指定模式字符串，代码根据 `feature_mode` 走不同加载分支
+- **不会自动切换**：因为不同模式维度差异巨大(raw 3072D vs gap 64D)，自动切换会破坏可复现性。建议 benchmark 中分别注册为独立数据集项，一次性跑通三个配置的对比
+
+**基准测试重定位**：
+- `benchmark/config.py` 默认 datasets 从 7 个 2D toy → 10 个高维真实数据
+  - 新默认列表：`iris, wine, digits, usps, pendigits, letter, har, reuters, mnist, fashion_mnist, cifar10_raw`
+- 保留 `blobs/moons` 作为 CI smoke test 快速验证（~5s）
+- 新增分层 benchmark 策略：
+  - `smoke` (3 数据集, ~5min) → CI 每次提交
+  - `full` (11 数据集, ~30min) → 每日/PR 合并前
+  - `exhaustive` (全量, ~2h) → 发版/论文前
+
+##### 4.2 2D 数据瘦身 — P1 (Week 1)
+
+**现有 2D SIPU/CHAMELEON 数据集处理方案（待你确认）**：
+
+当前 6 个复杂 2D 数据的详细状态：
+
+| 数据集 | 键名 | 样本 | 标签 | shape_family | 当前用途 |
+|--------|------|------|------|-------------|----------|
+| **pathbased** | `pathbased` | 300 | 3 类 | `non_convex` | SIPU 环形基准 |
+| **Square** | `square` | ~800 | 5 类 | `non_convex` | 嵌套方形 |
+| **Spiral** | `spiral_sipu` | 312 | 3 类 | `manifold` | 三螺旋线 |
+| **Half-kernel** | `half_kernel` | ~750 | 4 类 | `non_convex` | 高斯+抛物线 |
+| **t4.8k** | `t4_8k` | 8,000 | **无标签** | `non_convex` | 面具多密度 |
+| **t7.10k** | `t7_10k` | 10,000 | **无标签** | `manifold` | 迷宫连通域 |
+
+处理选项：
+
+- **方案 A（推荐）**：保留代码不删除，但从默认 benchmark/FIXED_SIZE_DATASETS 中移除。代码保留在 `data_factory.py` 中，web_demo 下拉框隐藏（或标记 `[DEPRECATED]`），benchmark 默认列表不包含。若将来审稿需要 2D 可视化证据可随时恢复。
+- **方案 B**：全部删除相关代码（`data_factory.py` 中的生成函数 + `FIXED_SIZE_DATASETS` 注册 + web_demo 列表项），彻底清理。
+- **方案 C**：仅保留有标签的 4 个(pathbased/square/spiral/half_kernel)，删除 t4_8k/t7_10k（无标签无法 ARI 评估，价值最低）。
+
+**推荐方案 A**：代码即文档，删除无益；但从默认路径移除确保不影响日常开发效率。
+
+##### 4.3 深度管线高维适配 — P2 (Week 1-2)
+- [ ] DimensionExpert 激活阈值调整：`n_features > 32` → `n_features > 16`（覆盖 Pendigits/Letter 等 16D 数据）
+- [ ] PCA+KMeans baseline 管线确保所有高维数据集可达
+- [ ] AE_KMeans / SelfLabel 在 CIFAR-10 (raw+gap+resnet18) 上首轮验证
+- [ ] 高维数据上 Critic audit 默认开启 `fast_audit`（跳过 graph/boundary 任务避免 O(N²) 爆炸）
+- [ ] 运行全量 online benchmark：11 数据集 × 7 专家
+
+##### 4.4 Benchmark 报告体系升级 — P3 (Week 2)
+- [ ] 生成 11 数据集 × 7 专家的完整 benchmark 报告矩阵
+- [ ] 按领域分组对比：图像(MNIST/Fashion-MNIST/CIFAR-10/USPS) vs 文本(Reuters/News) vs 传感器(HAR) vs 笔迹(Pendigits/Letter)
+- [ ] 输出 per-algorithm ranking table（跨数据集汇总）
+- [ ] 更新 LaTeX 报告模板：支持多数据集汇总 + 跨领域对比表格
+- [ ] 文档同步：README + Engineering Handbook
+
+#### Phase 5 — 学科特化与扩展 (原 Phase 4，后移，目标 4 个月+)
+
+##### 5.1 RAG 知识引擎升级 — P1 (Week 5-6)
 > **2026-05-04 决策**：经评估 Milvus/Qdrant/Dify 等方案后，决定**在现有 ChromaDB 基础上深度升级而非替换**。
 > 理由：Chromadb 已稳定集成（`knowledge_engine.py`），零运维嵌入式部署；核心痛点不在向量库本身，而在分块/元数据/混合检索缺失。
-- [ ] **A. 学术论文逻辑分块 (Logical Chunking)**：PDF 解析时用正则提取 Section Heading (`Abstract`, `Methodology`, `Results` 等)，存入每个 chunk 的 `metadata.section`。查询时 query analyzer 判断用户意图类别（理论/方法/实验），优先过滤 `where={"section": "methodology"}` 的内容。意图分析先用关键词规则（"如何选参"→methodology），后续可升级为微型 LLM 调用。
-- [ ] **B. 双模式检索 (Lightweight / High Quality)**：侧边栏开关控制。`lightweight`（默认）：BM25 + 向量 → RRF 融合 → top-3，延迟 ~50ms，CPU 友好。`high_quality`：BM25 + 向量 → RRF → top-10 → Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) 重排 → top-3，延迟 ~500ms，精度更高。
-- [ ] **C. 多 Collection 领域感知并行检索**：`ace_bioinfo` / `ace_general` / `ace_cv` 三 collection 并行查询，领域匹配的 collection 结果加权 2x，合并后按加权分数排序。bioinfo 命中低时 general 结果自动递补，不需要二次查询回退。
-- [ ] **元数据模型**：每条 chunk 带 `{domain, year, keywords, title, authors, section}`，支持 ChromaDB `where=` 过滤
-- [ ] **`build_index.py`**：离线预构建脚本（PDF→逻辑分块→嵌入→入库），支持 BibTeX/JSON 元数据 + 增量更新 + manifest 去重
-- [ ] 路由误判时记录路由置信度
+- [ ] **A. 学术论文逻辑分块 (Logical Chunking)**：PDF 解析时用正则提取 Section Heading
+- [ ] **B. 双模式检索 (Lightweight / High Quality)**：侧边栏开关控制
+- [ ] **C. 多 Collection 领域感知并行检索**：`ace_bioinfo` / `ace_general` / `ace_cv` 三 collection 并行查询
+- [ ] **元数据模型** + **`build_index.py`** 离线预构建脚本
 
-##### 4.2 其他
-- [ ] **KIM (Knowledge Integration Mechanism)**：跨语言脚本集成机制，支持 LLM Agent 自主检索并调用外部 MATLAB / R 语言专业算法脚本（如 Bioconductor 生信包），通过子进程沙箱执行 + 跨语言数据序列化
-- [ ] 多模态：图像/文本主题聚类（复用 Phase 3 的深度表示能力）
+##### 5.2 其他
+- [ ] **KIM (Knowledge Integration Mechanism)**：跨语言脚本集成机制
+- [ ] 多模态：图像/文本主题聚类
 - [ ] 稳定性强化、用户反馈沉淀
 
-#### Phase 5 — ACE-as-a-Service (长期设想，暂不启动)
-> **定位调整**：仅作为功能完整后的最终设想，优先级最低；Phase 0–4 全部完成并验证后再立项。
+#### Phase 6 — ACE-as-a-Service (长期设想，暂不启动)
+> **定位调整**：仅作为功能完整后的最终设想，优先级最低；Phase 0–5 全部完成并验证后再立项。
 - [ ] RESTful API、鉴权、任务队列、限流/计费等服务化能力
 
 #### 🗑️ 砍/延后项
@@ -184,7 +268,7 @@ streamlit run web_demo.py
 ### 4. 规划决策约束 (Governance)
 
 后续任何 PR、Issue、功能提案必须满足：
-1. **地基优先**：Phase 1 未完成前，不启动 Phase 2 及以后的专家开发。
+1. **地基优先**：Phase 4 未完成前，不启动 Phase 5 (RAG/KIM)。
 2. **可度量**：新增自愈/聚类能力必须附带 benchmark 结果。
 3. **成本可控**：涉及 LLM 调用的改动必须评估 Token 成本上限。
 4. **文档同步**：代码变更须同步更新本 README 与 Engineering Handbook，禁止"TODO 与现实脱节"再次发生。

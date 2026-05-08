@@ -105,6 +105,83 @@ class DataContext:
 
 
 # ---------------------------------------------------------------------------
+# DBCV (Density-Based Cluster Validation) — pre-injected into sandbox
+# ---------------------------------------------------------------------------
+def _dbcv_score(X: np.ndarray, labels: np.ndarray) -> float:
+    """Compute DBCV index for arbitrary-shaped clustering quality.
+
+    DBCV measures the ratio of inter-cluster density separation to
+    intra-cluster density sparseness.  Range approx [-1, 1]; higher is better.
+    DBCV < 0 means clusters are not well-separated in density space.
+    """
+    import numpy as _np
+
+    _X = _np.asarray(X, dtype=float)
+    _labels = _np.asarray(labels, dtype=int).ravel()
+    unique_lbls = _np.unique(_labels)
+    unique_lbls = unique_lbls[unique_lbls >= 0]  # exclude noise
+    n_clusters = len(unique_lbls)
+    n_samples = _X.shape[0]
+
+    if n_clusters < 2 or n_clusters >= n_samples:
+        return 0.0
+
+    from sklearn.neighbors import NearestNeighbors
+
+    n_neighbors = min(10, n_samples - 1)
+    nn = NearestNeighbors(n_neighbors=n_neighbors).fit(_X)
+    dists, _indices = nn.kneighbors(_X)
+    core_dists = dists[:, -1]  # distance to k-th neighbor
+
+    # Per-cluster density sparseness: median core distance
+    sparseness = {}
+    for lbl in unique_lbls:
+        mask = _labels == lbl
+        if mask.sum() > 1:
+            sparseness[lbl] = float(_np.median(core_dists[mask]))
+        else:
+            sparseness[lbl] = 0.0
+
+    # Inter-cluster density separation: min pairwise distance between clusters
+    separations = []
+    unique_arr = list(unique_lbls)
+    for i in range(len(unique_arr)):
+        for j in range(i + 1, len(unique_arr)):
+            ci, cj = unique_arr[i], unique_arr[j]
+            mi = _labels == ci
+            mj = _labels == cj
+            # Min point-to-point distance between two clusters
+            # Use a sampled approach for large clusters
+            ni, nj = mi.sum(), mj.sum()
+            if ni * nj <= 10000:
+                # Full cross-distance
+                Xi, Xj = _X[mi], _X[mj]
+                from scipy.spatial.distance import cdist
+                dmat = cdist(Xi, Xj, metric="euclidean")
+                min_d = float(dmat.min())
+            else:
+                # Sampled approach
+                rng = _np.random.RandomState(42)
+                si = rng.choice(ni, min(100, ni), replace=False)
+                sj = rng.choice(nj, min(100, nj), replace=False)
+                Xi, Xj = _X[mi][si], _X[mj][sj]
+                from scipy.spatial.distance import cdist
+                dmat = cdist(Xi, Xj, metric="euclidean")
+                min_d = float(dmat.min())
+            separations.append(min_d)
+
+    if not separations:
+        return 0.0
+
+    mean_sep = float(_np.mean(separations))
+    mean_sparse = float(_np.mean(list(sparseness.values())))
+    denom = max(mean_sep, mean_sparse)
+    if denom < 1e-12:
+        return 0.0
+    return float((mean_sep - mean_sparse) / denom)
+
+
+# ---------------------------------------------------------------------------
 # Core modules pre-injected into every sandbox so LLM code can use them
 # without import statements.  Additional expert-specific modules are merged
 # via the ``pre_inject`` kwarg of ``execute()``.
@@ -148,13 +225,67 @@ def _build_core_pre_inject() -> dict[str, Any]:
             silhouette_score,
             calinski_harabasz_score,
             davies_bouldin_score,
+            adjusted_rand_score,
+            normalized_mutual_info_score,
         )
 
         modules["silhouette_score"] = silhouette_score
         modules["calinski_harabasz_score"] = calinski_harabasz_score
         modules["davies_bouldin_score"] = davies_bouldin_score
+        modules["adjusted_rand_score"] = adjusted_rand_score
+        modules["normalized_mutual_info_score"] = normalized_mutual_info_score
     except Exception:
         pass
+    # --- graph / nearest-neighbours (Phase 3 Topology-Aware) ---
+    try:
+        from sklearn.neighbors import (  # noqa: F811
+            NearestNeighbors,
+            kneighbors_graph,
+            radius_neighbors_graph,
+        )
+        modules["NearestNeighbors"] = NearestNeighbors
+        modules["kneighbors_graph"] = kneighbors_graph
+        modules["radius_neighbors_graph"] = radius_neighbors_graph
+    except Exception:
+        pass
+    try:
+        from scipy.sparse import csgraph  # noqa: F811
+        modules["csgraph"] = csgraph
+    except Exception:
+        pass
+    try:
+        import scipy.sparse as sparse  # noqa: F811
+        modules["sparse"] = sparse
+    except Exception:
+        pass
+    # --- density / topology algorithms (Critic bootstrap stability needs these) ---
+    try:
+        from sklearn.cluster import DBSCAN, OPTICS, SpectralClustering, AgglomerativeClustering  # noqa: F811
+        modules["DBSCAN"] = DBSCAN
+        modules["OPTICS"] = OPTICS
+        modules["SpectralClustering"] = SpectralClustering
+        modules["AgglomerativeClustering"] = AgglomerativeClustering
+    except Exception:
+        pass
+    try:
+        from sklearn.cluster import HDBSCAN  # noqa: F811
+        modules["HDBSCAN"] = HDBSCAN
+    except Exception:
+        pass
+    # --- model selection (Critic stratified sampling) ---
+    try:
+        from sklearn.model_selection import StratifiedShuffleSplit  # noqa: F811
+        modules["StratifiedShuffleSplit"] = StratifiedShuffleSplit
+    except Exception:
+        pass
+    # --- tree (Critic boundary quality audit) ---
+    try:
+        from sklearn.tree import DecisionTreeClassifier  # noqa: F811
+        modules["DecisionTreeClassifier"] = DecisionTreeClassifier
+    except Exception:
+        pass
+    # --- dbcv_score (density-based cluster validation) ---
+    modules["dbcv_score"] = _dbcv_score
     return modules
 
 

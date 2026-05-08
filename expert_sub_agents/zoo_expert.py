@@ -82,6 +82,20 @@ class ZooExpert(BaseExpert):
             # a tighter eps=0.3 works reliably for low-to-medium noise datasets.
             if algo["name"] == "DBSCAN" and params.get("eps") == 0.5:
                 params["eps"] = 0.3
+            # SpectralClustering: larger k with mutual k-NN for spread-out manifold classes.
+            # Mutual k-NN removes cross-class shortcut edges, so we can afford a larger
+            # base k to maintain connectivity of extended manifold classes (e.g., parabola curves).
+            # For n=750, k≈22 (vs. old k=7), mutual filtering keeps effective degree ≈8-12.
+            if algo["name"] == "SpectralClustering" and params.get("affinity") == "nearest_neighbors":
+                import numpy as _np_zoo
+                _n_samp = dataset.X.shape[0]
+                _n_feat = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
+                if _n_feat <= 3:
+                    # 2D/3D: 3% of n, bounded [10, 50]
+                    params["n_neighbors"] = max(10, min(50, int(0.03 * _n_samp)))
+                else:
+                    # High-dim: sqrt-based, bounded [10, 50]
+                    params["n_neighbors"] = max(10, min(50, int(_np_zoo.sqrt(_n_samp)) // 2))
             algo_configs.append({"name": algo["name"], "params": params, "max_samples": algo.get("max_samples")})
 
         # 序列化算法配置供代码使用
@@ -247,11 +261,22 @@ class ZooExpert(BaseExpert):
             "        _Cls = _algo_map[_name]",
             '        if _name == "GaussianMixture":',
             '            _params = {k.replace("n_clusters", "n_components"): v for k, v in _params.items()}',
-            "        _model = _Cls(**_params)",
-            '        if hasattr(_model, "fit_predict"):',
-            "            _labels = _model.fit_predict(_X_scaled)",
+            "        # SpectralClustering with nearest_neighbors: build mutual k-NN",
+            "        # to eliminate cross-manifold shortcut edges (Half-kernel fix).",
+            '        _is_spec_mutual = _name == "SpectralClustering" and _params.get("affinity") == "nearest_neighbors"',
+            "        if _is_spec_mutual:",
+            "            _k_spec = _params.pop('n_neighbors', 5)",
+            '            _adj_fwd_spec = kneighbors_graph(_X_scaled, _k_spec, mode="connectivity", include_self=False)',
+            "            _adj_mutual_spec = _adj_fwd_spec.minimum(_adj_fwd_spec.T)",
+            '            _params["affinity"] = "precomputed"',
+            "            _model = _Cls(**_params)",
+            "            _labels = _model.fit_predict(_adj_mutual_spec)",
             "        else:",
-            "            _labels = _model.fit(_X_scaled).predict(_X_scaled)",
+            "            _model = _Cls(**_params)",
+            '            if hasattr(_model, "fit_predict"):',
+            "                _labels = _model.fit_predict(_X_scaled)",
+            "            else:",
+            "                _labels = _model.fit(_X_scaled).predict(_X_scaled)",
             "        _metrics = _evaluate(_X_scaled, y, _labels)",
             '        _plot_path = f"{_output_base}/{_name.lower()}_clusters.png"',
             '        _plot_clusters(_X_2d, _labels, f"{_name} Clustering", _plot_path)',

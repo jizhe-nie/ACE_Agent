@@ -79,6 +79,10 @@ class BaseExpert(ABC):
         code = _strip_code_fences(raw_code)
 
         # 2. Attempt to run + fix (up to MAX_RETRIES times)
+        _best_ari_from_attempts = -1.0
+        _best_code_from_attempts = ""
+        _first_success_ari = None
+
         for attempt in range(1, self.MAX_RETRIES + 1):
             logs.append(f"[{self.label}] 第 {attempt} 次尝试运行代码...")
             try:
@@ -99,6 +103,75 @@ class BaseExpert(ABC):
             if run_result["success"] and run_result["artifacts"]:
                 # 只有代码运行成功 AND artifacts 非空才视为真正成功
                 logs.append(f"[{self.label}] 运行成功！")
+
+                # ---- Quality audit: compute ARI for this batch --------------
+                _this_batch_ari = -1.0
+                if dataset.y is not None:
+                    try:
+                        import numpy as _qa_np
+                        from sklearn.metrics import adjusted_rand_score as _qa_ari
+                        _y_t = _qa_np.asarray(dataset.y, dtype=int).ravel()
+                        _aris = []
+                        for _algo, _info in run_result["artifacts"].items():
+                            if _algo.endswith("_error"):
+                                continue
+                            _lbl = _info.get("labels")
+                            if _lbl is not None and hasattr(_lbl, "__len__") and len(_lbl) > 0:
+                                try:
+                                    _lbl_a = _qa_np.asarray(_lbl, dtype=int).ravel()
+                                    _aris.append(float(_qa_ari(_y_t, _lbl_a)))
+                                except Exception:
+                                    pass
+                        if _aris:
+                            _this_batch_ari = max(_aris)
+                    except Exception:
+                        pass
+
+                # ---- Negative optimization gate (Phase 5.2) ----------------
+                if _first_success_ari is not None and _this_batch_ari >= 0:
+                    _ari_drop = _first_success_ari - _this_batch_ari
+                    if _ari_drop > 0.03:
+                        logs.append(
+                            f"[{self.label}] ⚠️ 负向优化检测：重试后 ARI={_this_batch_ari:.3f}，"
+                            f"相比首次成功 ARI={_first_success_ari:.3f} 下降了 {_ari_drop:.3f}。"
+                            f"自愈修复牺牲了聚类质量以规避错误，回退到首次成功代码。"
+                        )
+                        # Use the best code from previous attempts instead
+                        run_result = self.sandbox.execute(
+                            _best_code_from_attempts,
+                            dataset.X,
+                            dataset.y,
+                            pre_inject=self.PRE_INJECT or None,
+                            display_name=dataset.display_name,
+                            expected_clusters=dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3,
+                            metadata=dataset.metadata,
+                        )
+                        if run_result["success"] and run_result["artifacts"]:
+                            for algo, info in run_result["artifacts"].items():
+                                if algo.endswith("_error"):
+                                    continue
+                                plot_raw = info.get("plot_path", "")
+                                plot_path_obj = Path(plot_raw) if (plot_raw and Path(plot_raw).exists()) else (Path(plot_raw) if plot_raw else Path(""))
+                                results.append(
+                                    AlgorithmRunResult(
+                                        algorithm_name=algo,
+                                        expert_key=self.key,
+                                        expert_label=self.label,
+                                        labels=info.get("labels"),
+                                        metrics=info.get("metrics", {}),
+                                        plot_path=plot_path_obj,
+                                        code=_best_code_from_attempts,
+                                    )
+                                )
+                        break  # Stop retrying after rollback
+
+                # Track best ARI and code
+                if _this_batch_ari > _best_ari_from_attempts:
+                    _best_ari_from_attempts = _this_batch_ari
+                    _best_code_from_attempts = code
+                if _first_success_ari is None and _this_batch_ari >= 0:
+                    _first_success_ari = _this_batch_ari
+
                 for algo, info in run_result["artifacts"].items():
                     # 跳过错误占位条目（key 以 _error 结尾）
                     if algo.endswith("_error"):
@@ -164,7 +237,15 @@ class BaseExpert(ABC):
                 else:
                     logs.append(f"[{self.label}] 重试次数耗尽，artifacts 始终为空，任务失败。")
             else:
-                logs.append(f"[{self.label}] 运行失败，错误信息: {run_result['error'][:200]}")
+                # 捕获完整错误信息用于诊断（之前截断到 200 字符会导致根因丢失）
+                _full_err = run_result.get("error", "")
+                _err_summary = _full_err[:1500] if _full_err else "未知错误"
+                logs.append(f"[{self.label}] 运行失败，错误信息: {_err_summary}")
+                if len(_full_err) > 1500:
+                    logs.append(f"[{self.label}] ... (错误信息被截断，原始长度 {len(_full_err)} 字符)")
+                # 同时记录生成的代码(截断到 500 字符)用于调试
+                _code_preview = code[:500].replace("\n", "\\n")
+                logs.append(f"[{self.label}] 代码前 500 字符: {_code_preview}")
                 if attempt < self.MAX_RETRIES:
                     logs.append(f"[{self.label}] 正在分析错误并重写代码 (第{attempt}次重试)...")
                     fix_client = UniversalLLMClient(
