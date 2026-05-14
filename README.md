@@ -100,12 +100,31 @@ streamlit run web_demo.py
 
 **核心原则：先夯地基 → 再扩专家 → 最后谈生态。**
 
-#### Phase 0 — 工程基线 (目标 2 周内)
-- [x] 对齐 README 与代码实况（移除不实"生产级"表述、更新 [TODO] 状态）
-- [x] 引入 CI：`pytest` + `ruff` + `mypy`，最小覆盖率门槛 60%（当前实测 ~62%，`--cov-fail-under=30` 作为 CI 门槛；TODO Phase 1 提升至 60）
-- [x] LLM 调用日志 + Token 计量 + 自愈重试指标（落盘 `outputs/llm_trace.jsonl`；`caller` 字段区分 generate / fix:N 调用；侧边栏实时累计展示）
-- [x] 沙箱加硬限额：wall-clock timeout（默认 60s，`ACE_SANDBOX_TIMEOUT_SEC` 可配）+ 内存上限（默认 2 GiB，基于 delta-RSS 监控，Windows psutil 实现）；超限抛出 `SandboxResourceExceeded(reason)`
-- [x] `llm_client.py` 抽象化：`LLMProvider` ABC + `OpenAICompatibleProvider` / `DeepSeekProvider` / `DashScopeProvider` / `OpenAIProvider`；主供应商失败自动 fallback（最多 1 次）；侧边栏新增 Fallback Provider 配置
+#### Phase 3.2 — 原生图社区发现 (2026-05 DONE)
+- [x] **Native Graph Expert**: 摆脱欧氏坐标，仅基于邻接矩阵进行分区。
+- [x] **Wall-Aware 构图**: 引入 Jaccard 剪枝与局部缩放权重，识别流形间的"防火墙"。
+- [x] **Louvain/MCL 集成**: 支持大规模图社区发现，采用模块度 (Modularity) 替代轮廓系数评分。
+
+#### Phase 6 — 智能诊断与评估增强 (2026-05 DONE)
+- [x] **NMI 指标**: 新增归一化互信息作为一级排序指标，与 ARI 并列展示。ARI 看配对一致性，NMI 看信息增益，两者互补交叉验证。
+- [x] **Hopkins 预检门禁**: 专家派发前对 500 样本快速估算 Hopkins，< 0.3 自动跳过密度/拓扑/图专家，省一半无效计算。
+- [x] **审计严格化**: 当 |winner_k - CVI_k| > 3 且 Hopkins < 0.3 时，endorsement 强制降级至 `qualified_with_warning`。
+- [x] **结果缓存**: 数据集哈希 → 跳过重复计算；自动绑定 git HEAD，代码改动即自动失效；支持"重新"/"重跑"关键词强制绕过。
+- [x] **大样本智能降采样**: N > 10K 时分层抽样至子集派发专家，避免 O(N²) 超时，共 11 处排名调用统一使用 working_dataset 消除 ARI 静默归零。
+- [x] **Router 数据集感知**: `analyze_intent()` 接收当前已选数据集上下文，"请分析该数据"在新会话中正确路由为 NEW_TASK。
+- [x] **多项关键 Bug 修复**: 高维数据误触发 UMAP 流形展开（512D→3D 失真）；`weighted_median` polyfill（scipy < 1.13 兼容）；`ACEJsonEncoder` 支持 numpy 标量类型。
+
+#### Phase 7 — 极限性能优化与 70K 样本支持 (2026-05 DONE)
+- [x] **Session 数据瘦身**: 递归剥离大数组，彻底解决 `.ace_sessions.json` 文件膨胀导致的 UI 瘫痪。
+- [x] **Ensemble 采样熔断**: $N > 5000$ 时自动切换为 Monte Carlo 随机对采样。
+- [x] **Hopkins 门禁**: 预检数据聚类倾向，Hopkins < 0.3 时自动跳过昂贵的拓扑专家。
+- [x] **数据集缓存限制**: `st.cache_data(max_entries=5)` 防止内存长期驻留。
+- [x] **沙箱自适应超时**: 根据样本量自动调整超时时间 (60s -> 240s)。
+
+#### Phase 8 — 多 LLM 混合架构 (2026-05 进行中)
+- [ ] **异构模型路由**: 调度 GPT-4o 负责审计 (Critic)，DeepSeek-Coder 负责代码生成。
+- [ ] **多方审查机制**: 当 Critic 裁决为 RETRY 时，引入第二个 LLM 进行交叉验证。
+- [ ] **性能分级**: 轻量级任务 (FOLLOW_UP) 路由到廉价模型，复杂任务 (NEW_TASK) 路由到旗舰模型。
 
 #### Phase 1 — 评估闭环优先于新专家 (目标 1 个月)
 - [x] **Critic Agent**：独立审计方，输出稳定性/重采样/CVI 指标 + Web UI 审计卡片 + LaTeX 审计章节 (**2026-04-30 DONE**)
