@@ -249,7 +249,7 @@ def _extract_cnn_features(
         import torch
         import torch.nn as nn
         from torchvision import transforms as T
-        from torchvision.models import resnet18, ResNet18_Weights
+        from torchvision.models import ResNet18_Weights, resnet18
     except ImportError:
         raise ImportError("需要 PyTorch + torchvision 来提取 CNN 特征")
 
@@ -1037,7 +1037,7 @@ def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
     elif feature_mode == "resnet18":
         # Pre-trained ResNet-18 features (penultimate layer)
         try:
-            from torchvision.models import resnet18, ResNet18_Weights
+            from torchvision.models import ResNet18_Weights, resnet18
         except ImportError:
             from torchvision.models import resnet18
             ResNet18_Weights = None

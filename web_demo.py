@@ -367,7 +367,7 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
         temperature=ss.get("temperature", 0.2),
     )
 
-    fallback_settings: LLMSettings | None = None
+    fallback_settings: _LLMS | None = None
     if fallback_p != "(disabled)" and fallback_api_key and fallback_model:
         fb_cfg = DEFAULT_PROVIDERS[fallback_p]
         fallback_settings = _LLMS(

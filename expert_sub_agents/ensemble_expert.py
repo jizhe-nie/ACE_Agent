@@ -610,8 +610,9 @@ def _generate_consensus_plot(
         # Chinese font setup for Windows
         import matplotlib
         matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
         import platform
+
+        import matplotlib.pyplot as plt
         if platform.system() == "Windows":
             plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
         plt.rcParams["axes.unicode_minus"] = False

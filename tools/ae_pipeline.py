@@ -413,7 +413,7 @@ def build_res_attention_autoencoder(
     latent_dim: int = 8,
     dropout: float = 0.2,
     num_heads: int = 4,
-) -> "torch.nn.Module":
+) -> torch.nn.Module:
     """Build residual AE with self-attention bottleneck for semantic features.
 
     Designed for GAP / embedding data (e.g. CIFAR-10 64D GAP) where:
@@ -429,8 +429,8 @@ def build_res_attention_autoencoder(
     to ``latent_dim``), letting the model learn which feature combinations
     carry the most classification signal.
     """
+
     import torch.nn as nn
-    import math as _math
 
     if not hidden_dims:
         if n_features > 128:
@@ -459,7 +459,7 @@ def build_res_attention_autoencoder(
                 nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
             )
 
-        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.main(x) + self.skip(x)
 
     # ---- Self-attention bottleneck ----------------------------------------
@@ -481,7 +481,7 @@ def build_res_attention_autoencoder(
             self.out_proj = nn.Linear(embed_dim, embed_dim)
             self.norm = nn.LayerNorm(embed_dim)
 
-        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
             B, D = x.shape
             qkv = self.qkv(x)  # (B, 3*D)
             q, k, v = qkv.chunk(3, dim=-1)
@@ -530,8 +530,8 @@ def build_res_attention_autoencoder(
             self.decoder = nn.Sequential(*decoder_blocks)
 
         def forward(
-            self, x: "torch.Tensor",
-        ) -> tuple["torch.Tensor", "torch.Tensor"]:
+            self, x: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
             h = self.encoder[:-1](x)  # all residual blocks
             h = self.attention(h)      # self-attention reweighting
             z = self.encoder[-1](h)    # final linear to latent

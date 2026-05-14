@@ -214,10 +214,8 @@ class ACESupervisor:
         """
         def _progress(msg: str, step: int = 0, total: int = 1) -> None:
             if progress_callback:
-                try:
+                with contextlib.suppress(Exception):
                     progress_callback(msg, step, total)
-                except Exception:
-                    pass
 
         # 1. 语义路由
         if not intent_data:
@@ -394,10 +392,8 @@ class ACESupervisor:
 
         def _progress(msg: str, step: int = 0, total: int = 1) -> None:
             if progress_callback:
-                try:
+                with contextlib.suppress(Exception):
                     progress_callback(msg, step, total)
-                except Exception:
-                    pass
 
         output_dir = self._prepare_output_dir(dataset.name)
         all_results: list[AlgorithmRunResult] = []
@@ -421,14 +417,13 @@ class ACESupervisor:
         # Centroid algorithms (KMeans/GMM) on raw pixels will naturally rank
         # low via ARI — no need to hard-suppress them.
         _img_meta = dataset.metadata or {}
-        if _img_meta.get("is_image") and _n_features_raw > 500:
-            if "dimension" not in active_experts:
-                active_experts.append("dimension")
-                trace.append(
-                    f"【图像路由】检测到图像数据 ({_n_features_raw}D)，"
-                    f"已激活维度专家（深度嵌入管线）。"
-                    f"提示：原始像素欧氏距离无语义判别力，建议使用 ResNet 特征模式 (cifar10_resnet)。"
-                )
+        if _img_meta.get("is_image") and _n_features_raw > 500 and "dimension" not in active_experts:
+            active_experts.append("dimension")
+            trace.append(
+                f"【图像路由】检测到图像数据 ({_n_features_raw}D)，"
+                f"已激活维度专家（深度嵌入管线）。"
+                f"提示：原始像素欧氏距离无语义判别力，建议使用 ResNet 特征模式 (cifar10_resnet)。"
+            )
 
         # ---- Phase 2.4: Manifold pre-processing for complex topology ----
         # Detect non-convex / manifold data and apply UMAP / SpectralEmbedding
@@ -483,10 +478,8 @@ class ACESupervisor:
             expert = self.experts.get(key)
             # Apply adaptive timeout to this expert's sandbox
             if expert is not None and hasattr(expert, "sandbox"):
-                try:
+                with contextlib.suppress(Exception):
                     expert.sandbox.timeout_sec = _base_timeout
-                except Exception:
-                    pass
             _progress(f"正在运行 {key} 专家 ({idx + 1}/{n_experts})...", idx + 1, n_experts)
             if expert is None:
                 trace.append(f"【主控】警告：专家 '{key}' 未在注册表中找到，跳过。")
@@ -590,10 +583,8 @@ class ACESupervisor:
             for _r in all_results:
                 _rl = getattr(_r, "labels", None)
                 if _rl is not None and hasattr(_rl, "__len__") and len(_rl) > 0:
-                    try:
+                    with contextlib.suppress(Exception):
                         _all_aris.append(float(_global_ari_fn(_y_true, np.asarray(_rl, dtype=int).ravel())))
-                    except Exception:
-                        pass
             if _all_aris and max(_all_aris) < 0.5:
                 _global_low_ari = True
                 trace.append(
@@ -613,12 +604,10 @@ class ACESupervisor:
                     continue
                 _rl = getattr(_r, "labels", None)
                 if _rl is not None and hasattr(_rl, "__len__") and len(_rl) > 0:
-                    try:
+                    with contextlib.suppress(Exception):
                         _all_independent_aris.append(
                             float(_fail_ari_fn(_y_fail, np.asarray(_rl, dtype=int).ravel()))
                         )
-                    except Exception:
-                        pass
             if _all_independent_aris and max(_all_independent_aris) < 0.7:
                 _deep_pipeline_triggered = True
                 _best_independent_ari = max(_all_independent_aris)
@@ -1480,11 +1469,9 @@ class ACESupervisor:
                 pass
 
         # ---- Classification rules ----
-        if geodesic_distortion > 0.5:
-            structure_class = "graph_connected"
-        elif sf in ("non_convex", "manifold") and geodesic_distortion > 0.3:
-            structure_class = "graph_connected"
-        elif sf == "manifold" and geodesic_distortion > 0.15:
+        if (geodesic_distortion > 0.5
+                or (sf in ("non_convex", "manifold") and geodesic_distortion > 0.3)
+                or (sf == "manifold" and geodesic_distortion > 0.15)):
             structure_class = "graph_connected"
         elif sf in ("non_convex",) and geodesic_distortion <= 0.1:
             structure_class = "non_convex"
@@ -2163,12 +2150,10 @@ class ACESupervisor:
         for r in all_results:
             _lbl = getattr(r, "labels", None)
             if _lbl is not None and hasattr(_lbl, "__len__") and len(_lbl) > 0:
-                try:
+                with contextlib.suppress(Exception):
                     _pre_aris.append(
                         float(adjusted_rand_score(y_true_arr, np.asarray(_lbl, dtype=int).ravel()))
                     )
-                except Exception:
-                    pass
         _max_labeled_ari = max(_pre_aris) if _pre_aris else 0.0
 
         for r in all_results:
@@ -2315,7 +2300,7 @@ class ACESupervisor:
 
         try:
             best_ari = float(adjusted_rand_score(y_true_arr, best_labels_arr))
-            best_nmi = float(normalized_mutual_info_score(y_true_arr, best_labels_arr))
+            _best_nmi = float(normalized_mutual_info_score(y_true_arr, best_labels_arr))
         except Exception:
             return
 

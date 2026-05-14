@@ -17,7 +17,8 @@ from typing import Any
 
 import numpy as np
 from scipy.sparse import csgraph as _csgraph
-from scipy.sparse import csr_matrix, spmatrix, issparse as _issparse
+from scipy.sparse import csr_matrix, spmatrix
+from scipy.sparse import issparse as _issparse
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
 
 _OUTPUTS_DIR = Path(__file__).resolve().parents[1] / "outputs"
@@ -218,7 +219,7 @@ class GraphBuilder:
         These "wall-crossings" indicate where Euclidean clustering would
         incorrectly merge points across a graph boundary.
         """
-        n = X.shape[0]
+        _n = X.shape[0]
         rng = np.random.RandomState(42)
         pairs: list[tuple[int, int]] = []
         # Sample candidate pairs from adjacency edges (Euclidean-near)
@@ -553,8 +554,8 @@ class GraphBuilder:
         # For each cluster, check if its x-range or y-range is
         # primarily bounded by single-axis thresholds
         axis_scores = []
-        x_range_explained = 0.0
-        y_range_explained = 0.0
+        _x_range_explained = 0.0
+        _y_range_explained = 0.0
 
         for c in unique:
             mask = lbl_arr == c
@@ -742,7 +743,6 @@ class GraphBuilder:
         Runs spectral graph-cut clustering for k=min_k..max_k, selects the
         k that minimizes conductance + maximizes modularity.
         """
-        import numpy as np
         best_k = min_k
         best_score = -1e12
         for k in range(min_k, min(max_k + 1, adjacency.shape[0])):
@@ -794,7 +794,7 @@ class GraphBuilder:
         Returns dense for n ≤ 5000; sparse otherwise.
         """
         import numpy as np
-        from scipy.sparse import csr_matrix, issparse as _issparse
+        from scipy.sparse import issparse as _issparse
 
         P = GraphBuilder.compute_transition_matrix(adjacency)
         n = P.shape[0]
@@ -969,7 +969,8 @@ class GraphBuilder:
           - assessment : str  ('good' / 'fair' / 'poor')
         """
         import numpy as np
-        from scipy.sparse import csr_matrix, issparse as _issparse
+        from scipy.sparse import csr_matrix
+        from scipy.sparse import issparse as _issparse
 
         X = np.asarray(X, dtype=float)
         labels = np.asarray(labels, dtype=int).ravel()
@@ -996,7 +997,7 @@ class GraphBuilder:
         # ---- 1. Inter-community edge flow (normalised) ----
         total_edges = A.sum()
         inter_flow = 0.0
-        for i, ci in enumerate(unique_labels):
+        for _i, ci in enumerate(unique_labels):
             mask_i = labels == ci
             for cj in unique_labels:
                 if cj <= ci:
@@ -1009,7 +1010,6 @@ class GraphBuilder:
         # ---- 2. Bottleneck alignment ----
         # For each boundary point (close to another cluster), check if
         # its graph degree is low → bottleneck
-        from sklearn.neighbors import NearestNeighbors
 
         rng = np.random.RandomState(42)
         sample_n = min(sample_size, n)
@@ -1147,7 +1147,7 @@ class GraphBuilder:
         adj_bin.data = np.ones_like(adj_bin.data)
         adj_bin.eliminate_zeros()
 
-        degrees = np.asarray(adj_bin.sum(axis=1)).ravel().astype(int)
+        _degrees = np.asarray(adj_bin.sum(axis=1)).ravel().astype(int)
 
         # For each node, get sorted neighbor list
         neighbor_sets: list[set] = [set() for _ in range(n)]
@@ -1194,7 +1194,6 @@ class GraphBuilder:
         by a maze wall share very few kNN neighbors.
         """
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         n = X.shape[0]
         if k is None:
@@ -1227,7 +1226,6 @@ class GraphBuilder:
         This is the self-tuning approach (Zelnik-Manor & Perona, 2004):
         edge weight = exp(-d(i,j)² / (σ_i * σ_j)).
         """
-        import numpy as np
         from sklearn.neighbors import NearestNeighbors
 
         n = X.shape[0]
@@ -1259,7 +1257,6 @@ class GraphBuilder:
         maintain connectivity.
         """
         import numpy as np
-        from scipy.sparse import csr_matrix, diags
         from sklearn.neighbors import kneighbors_graph
 
         n = X.shape[0]
@@ -1338,8 +1335,7 @@ class GraphBuilder:
         Uses ``compute_adaptive_k`` for per-point k, then builds mutual kNN
         with variable-sized neighborhoods.
         """
-        import numpy as np
-        from scipy.sparse import csr_matrix, lil_matrix
+        from scipy.sparse import lil_matrix
         from sklearn.neighbors import NearestNeighbors
 
         n = X.shape[0]
@@ -1488,14 +1484,13 @@ class GraphBuilder:
 
         Returns (pruned_adjacency, pruning_report).
         """
-        import numpy as np
         from scipy.sparse import lil_matrix
 
         shortcut_info = GraphBuilder.detect_shortcut_edges(
             X, adjacency, jaccard_threshold=jaccard_threshold,
         )
 
-        n = adjacency.shape[0]
+        _n = adjacency.shape[0]
         adj = adjacency.tolil() if _issparse(adjacency) else lil_matrix(adjacency)
 
         removed = 0
@@ -1556,7 +1551,7 @@ class GraphBuilder:
                 for v in range(n):
                     if not np.isfinite(dists[0, v]) or v == lm:
                         continue
-                    path_nodes = [v]
+                    _path_nodes = [v]
                     curr = v
                     while curr != lm and predecessors[0, curr] >= 0:
                         p = predecessors[0, curr]
@@ -1574,11 +1569,11 @@ class GraphBuilder:
         # Sort edges by score and keep top keep_fraction
         sorted_edges = sorted(edge_scores.items(), key=lambda x: -x[1])
         n_keep = max(1, int(len(sorted_edges) * keep_fraction))
-        keep_set = {e for e, _ in sorted_edges[:n_keep]}
+        _keep_set = {e for e, _ in sorted_edges[:n_keep]}
 
         # Build pruned adjacency
         pruned = lil_matrix((n, n), dtype=float)
-        for (i, j), s in sorted_edges[:n_keep]:
+        for (i, j), _s in sorted_edges[:n_keep]:
             w = adj[i, j]
             pruned[i, j] = w
             pruned[j, i] = w
@@ -1820,7 +1815,6 @@ class GraphBuilder:
         Replaces raw ``kneighbors_graph`` + ``minimum`` calls.
         """
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         n = X.shape[0]
         X = np.asarray(X, dtype=float)

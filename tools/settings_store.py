@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import asdict, is_dataclass
@@ -99,10 +100,8 @@ class SessionManager:
         file_mb = self.path.stat().st_size / (1024 * 1024)
         if file_mb > self._MAX_FILE_MB:
             _backup = self.path.with_suffix(".json.bak")
-            try:
+            with contextlib.suppress(OSError):
                 self.path.rename(_backup)
-            except OSError:
-                pass
             return []
         try:
             return json.loads(self.path.read_text(encoding="utf-8"))
@@ -135,7 +134,7 @@ class SessionManager:
     def save_session(self, session_id: str, messages: list[dict], metadata: dict = None):
         # Strip heavy data from messages before saving
         clean_messages = self._strip_heavy_data(messages)
-        
+
         session_data = {
             "id": session_id,
             "messages": clean_messages,

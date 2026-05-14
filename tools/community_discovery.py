@@ -17,10 +17,9 @@ Algorithms:
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
-from scipy.sparse import csr_matrix, eye as speye, diags, spmatrix, issparse
+from scipy.sparse import csr_matrix, diags, issparse, spmatrix
+from scipy.sparse import eye as speye
 from scipy.sparse.linalg import eigsh
 
 
@@ -155,7 +154,7 @@ def mcl_clustering(
     M = A @ D_inv  # M_ij = P(j→i)
     M = M.tocsc()
 
-    rng = np.random.RandomState(random_state)
+    _rng = np.random.RandomState(random_state)
 
     for _ in range(max_iter):
         prev_nnz = M.nnz
@@ -532,17 +531,17 @@ def leiden_clustering(
     guaranteed well-connectedness refinement step).
     """
     try:
-        import leidenalg
         import igraph as ig
+        import leidenalg
 
         if issparse(adjacency):
             A_coo = adjacency.tocoo()
-            edges = list(zip(A_coo.row.tolist(), A_coo.col.tolist()))
+            edges = list(zip(A_coo.row.tolist(), A_coo.col.tolist(), strict=False))
             weights = A_coo.data.tolist()
         else:
             adj_dense = np.asarray(adjacency)
             rows, cols = np.where(adj_dense > 0)
-            edges = list(zip(rows.tolist(), cols.tolist()))
+            edges = list(zip(rows.tolist(), cols.tolist(), strict=False))
             weights = adj_dense[rows, cols].tolist()
 
         g = ig.Graph(n=adjacency.shape[0], edges=edges, directed=False)
@@ -577,12 +576,12 @@ def infomap_clustering(
         im = imp.Infomap(f"--seed {random_state}")
         if issparse(adjacency):
             A_coo = adjacency.tocoo()
-            for i, j, w in zip(A_coo.row, A_coo.col, A_coo.data):
+            for i, j, w in zip(A_coo.row, A_coo.col, A_coo.data, strict=False):
                 im.add_link(int(i), int(j), float(w))
         else:
             adj_dense = np.asarray(adjacency)
             rows, cols = np.where(adj_dense > 0)
-            for i, j in zip(rows, cols):
+            for i, j in zip(rows, cols, strict=False):
                 im.add_link(int(i), int(j), float(adj_dense[i, j]))
 
         im.run()
@@ -621,7 +620,7 @@ def discover_communities(
         from tools.graph_builder import GraphBuilder
 
     results: dict[str, np.ndarray] = {}
-    n = adjacency.shape[0]
+    _n = adjacency.shape[0]
 
     for method in methods:
         try:

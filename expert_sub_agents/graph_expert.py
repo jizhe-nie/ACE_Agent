@@ -702,7 +702,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def _build_graph_defaults(n_samples: int, n_features: int) -> dict[str, Any]:
-    k = max(2, min(15, int(n_samples ** 0.5) // 2))
+    _k = max(2, min(15, int(n_samples ** 0.5) // 2))
     return {
         "knn_k": min(30, max(5, int(n_samples ** 0.5))),
         "mutual": True,
