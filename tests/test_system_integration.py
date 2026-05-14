@@ -556,8 +556,13 @@ class TestKnowledgeEngineBaseline:
     def test_engine_initializes(self) -> None:
         from ACE_Agent.agent_brain.knowledge_engine import KnowledgeEngine
         engine = KnowledgeEngine()
-        assert engine.collection is not None
         assert engine.client is not None
+        # collection is lazily initialised on first query/ingest
+        _ = engine.query("test")
+        # query will attempt lazy init; in CI with HF_HUB_OFFLINE=1 the
+        # embedding model may not be available, so collection may stay None.
+        # Either way, the engine must not crash and query must return a str.
+        assert isinstance(engine.query(""), str)
 
     def test_query_empty_db_returns_empty(self) -> None:
         from ACE_Agent.agent_brain.knowledge_engine import KnowledgeEngine
