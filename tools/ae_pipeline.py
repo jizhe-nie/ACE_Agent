@@ -405,6 +405,235 @@ def ae_kmeans_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# Residual + Self-Attention AutoEncoder for GAP / embedding features (Phase 6)
+# ---------------------------------------------------------------------------
+def build_res_attention_autoencoder(
+    n_features: int,
+    hidden_dims: list[int] | None = None,
+    latent_dim: int = 8,
+    dropout: float = 0.2,
+    num_heads: int = 4,
+) -> "torch.nn.Module":
+    """Build residual AE with self-attention bottleneck for semantic features.
+
+    Designed for GAP / embedding data (e.g. CIFAR-10 64D GAP) where:
+    - Each dimension is a semantic feature (not raw pixel)
+    - Features are correlated and benefit from attention-based reweighting
+    - Residual connections prevent vanishing gradients in deeper stacks
+
+    Architecture::
+
+        Input → ResBlock(s) → SelfAttention → Latent → ResBlock(s) → Output
+
+    The self-attention sits at the pre-bottleneck layer (before compression
+    to ``latent_dim``), letting the model learn which feature combinations
+    carry the most classification signal.
+    """
+    import torch.nn as nn
+    import math as _math
+
+    if not hidden_dims:
+        if n_features > 128:
+            hidden_dims = [256, 128, 64, 32]
+        elif n_features > 64:
+            hidden_dims = [128, 64, 32]
+        elif n_features > 32:
+            hidden_dims = [64, 32]
+        else:
+            hidden_dims = [max(32, n_features * 2), max(16, n_features)]
+    hidden_dims = [min(h, 2048) for h in hidden_dims]
+
+    # ---- Residual block ----------------------------------------------------
+    class ResidualBlock(nn.Module):
+        def __init__(
+            self, in_dim: int, out_dim: int, dp: float
+        ) -> None:
+            super().__init__()
+            self.main = nn.Sequential(
+                nn.Linear(in_dim, out_dim),
+                nn.BatchNorm1d(out_dim),
+                nn.LeakyReLU(0.2),
+                nn.Dropout(dp),
+            )
+            self.skip = (
+                nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
+            )
+
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            return self.main(x) + self.skip(x)
+
+    # ---- Self-attention bottleneck ----------------------------------------
+    class SelfAttentionBottleneck(nn.Module):
+        """Multi-head self-attention operating across feature sub-spaces.
+
+        Reshapes (B, D) → (B, num_heads, D//num_heads) so each attention
+        head sees a slice of the feature vector, then aggregates.
+        """
+
+        def __init__(self, embed_dim: int, heads: int = 4) -> None:
+            super().__init__()
+            assert embed_dim % heads == 0, (
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({heads})"
+            )
+            self.heads = heads
+            self.head_dim = embed_dim // heads
+            self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+            self.out_proj = nn.Linear(embed_dim, embed_dim)
+            self.norm = nn.LayerNorm(embed_dim)
+
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            B, D = x.shape
+            qkv = self.qkv(x)  # (B, 3*D)
+            q, k, v = qkv.chunk(3, dim=-1)
+            # Reshape: (B, heads, head_dim)
+            q = q.view(B, self.heads, self.head_dim)
+            k = k.view(B, self.heads, self.head_dim)
+            v = v.view(B, self.heads, self.head_dim)
+            # Scaled dot-product attention across feature heads
+            scale = self.head_dim ** 0.5
+            attn_weights = (q * k).sum(dim=-1) / scale  # (B, heads)
+            attn_weights = attn_weights.softmax(dim=-1).unsqueeze(-1)
+            attended = (v * attn_weights).view(B, D)
+            return self.norm(x + self.out_proj(attended))
+
+    # ---- Build encoder ----------------------------------------------------
+    encoder_blocks: list[nn.Module] = []
+    in_dim = n_features
+    for h_dim in hidden_dims:
+        encoder_blocks.append(ResidualBlock(in_dim, h_dim, dropout))
+        in_dim = h_dim
+
+    # Self-attention on the deepest hidden representation
+    attn_bottleneck = SelfAttentionBottleneck(in_dim, heads=num_heads)
+
+    # Final compression to latent
+    encoder_blocks.append(nn.Linear(in_dim, latent_dim))
+
+    # ---- Build decoder (symmetric, no residual) ---------------------------
+    decoder_blocks: list[nn.Module] = []
+    in_dim = latent_dim
+    for h_dim in reversed(hidden_dims):
+        decoder_blocks.extend([
+            nn.Linear(in_dim, h_dim),
+            nn.BatchNorm1d(h_dim),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+        ])
+        in_dim = h_dim
+    decoder_blocks.append(nn.Linear(in_dim, n_features))
+
+    class ResAttentionAE(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = nn.Sequential(*encoder_blocks)
+            self.attention = attn_bottleneck
+            self.decoder = nn.Sequential(*decoder_blocks)
+
+        def forward(
+            self, x: "torch.Tensor",
+        ) -> tuple["torch.Tensor", "torch.Tensor"]:
+            h = self.encoder[:-1](x)  # all residual blocks
+            h = self.attention(h)      # self-attention reweighting
+            z = self.encoder[-1](h)    # final linear to latent
+            return self.decoder(z), z
+
+    return ResAttentionAE()
+
+
+def res_ae_kmeans_pipeline(
+    X: np.ndarray,
+    k: int,
+    *,
+    latent_dim: int = 0,
+    epochs: int = 100,
+    hidden_dims: list[int] | None = None,
+    learning_rate: float = 1e-3,
+    dropout: float = 0.2,
+    early_stopping_patience: int = 15,
+    noise_std: float = 0.15,
+    num_heads: int = 4,
+    cluster_method: str = "kmeans",
+    normalize: str = "standard",
+) -> dict:
+    """Residual + Self-Attention AE + clustering pipeline (Phase 6).
+
+    Uses ``build_res_attention_autoencoder()`` which adds residual
+    skip-connections and a multi-head self-attention bottleneck to the
+    standard deep AE architecture.
+
+    Intended for GAP / embedding features (e.g. 64D CIFAR-10 GAP) where
+    each dimension carries semantic meaning and inter-feature attention
+    helps isolate classification-relevant signal.
+    """
+    if not _HAS_TORCH:
+        return _sklearn_fallback_pipeline(
+            X, k, latent_dim=latent_dim or 0, cluster_method=cluster_method,
+            normalize=normalize)
+
+    from sklearn.metrics import silhouette_score
+
+    X_scaled = _scale_data(X, normalize)
+    n_features = X_scaled.shape[1]
+
+    if latent_dim <= 0:
+        latent_dim = min(8, max(2, n_features // 4))
+
+    # Auto-adjust heads based on the attention dimension
+    _hidden = hidden_dims or []
+    attn_dim = _hidden[-1] if _hidden else (
+        32 if n_features <= 32 else (64 if n_features <= 64 else 128)
+    )
+    _num_heads = min(num_heads, attn_dim // 4)
+    _num_heads = max(2, _num_heads)
+
+    device = _get_device()
+    ae = build_res_attention_autoencoder(
+        n_features, hidden_dims, latent_dim, dropout, _num_heads,
+    )
+    latent_repr = train_ae(
+        ae,
+        X_scaled,
+        epochs=epochs,
+        device=device,
+        learning_rate=learning_rate,
+        weight_decay=1e-4,
+        early_stopping_patience=early_stopping_patience,
+        noise_std=noise_std,
+    )
+
+    if cluster_method == "gmm":
+        from sklearn.mixture import GaussianMixture
+        labels = GaussianMixture(
+            n_components=k, random_state=42, n_init=3,
+        ).fit_predict(latent_repr)
+        method_name = "GMM"
+    else:
+        from sklearn.cluster import KMeans
+        labels = KMeans(
+            n_clusters=k, random_state=42, n_init=10,
+        ).fit_predict(latent_repr)
+        method_name = "KMeans"
+
+    sil = float(silhouette_score(latent_repr, labels))
+
+    return {
+        "labels": labels.tolist(),
+        "metrics": {
+            "score": sil,
+            "score_source": "silhouette",
+            "silhouette": sil,
+            "latent_dim": latent_dim,
+            "epochs": epochs,
+            "hidden_dims": hidden_dims or [],
+            "cluster_method": method_name,
+            "backend": f"torch-resattn-{device}",
+            "num_heads": _num_heads,
+        },
+        "plot_path": "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Conv-AE pipeline — for image data (MNIST, Fashion-MNIST, etc.)
 # ---------------------------------------------------------------------------
 def build_conv_autoencoder(

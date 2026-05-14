@@ -41,6 +41,23 @@ def _strip_code_fences(text: str) -> str:
     return stripped.strip()
 
 
+def _sanitize_python_literals(code: str) -> str:
+    """Convert JSON/JavaScript literals that LLMs leak into Python code.
+
+    LLMs trained on both JSON and Python frequently emit ``true``, ``false``,
+    and ``null`` as standalone tokens (e.g. in boolean parameter values or
+    dict literals).  These are syntax errors in Python.
+    """
+    if not code:
+        return code
+    # Word-boundary-aware replacements to avoid false matches inside strings.
+    import re
+    code = re.sub(r'\btrue\b', 'True', code)
+    code = re.sub(r'\bfalse\b', 'False', code)
+    code = re.sub(r'\bnull\b', 'None', code)
+    return code
+
+
 class BaseExpert(ABC):
     """Expert agent base class: supports Think -> Act -> Fix loop."""
 
@@ -76,7 +93,7 @@ class BaseExpert(ABC):
 
         # 1. Initial code generation
         raw_code = self._generate_code(client, dataset, prompt, constraints=constraints)
-        code = _strip_code_fences(raw_code)
+        code = _sanitize_python_literals(_strip_code_fences(raw_code))
 
         # 2. Attempt to run + fix (up to MAX_RETRIES times)
         _best_ari_from_attempts = -1.0
@@ -330,5 +347,4 @@ class BaseExpert(ABC):
             attempt=attempt,
         )
         reply_text = reply or old_code
-        # Strip markdown code fences that LLMs sometimes wrap code in
-        return _strip_code_fences(reply_text)
+        return _sanitize_python_literals(_strip_code_fences(reply_text))

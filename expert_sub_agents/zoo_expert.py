@@ -101,7 +101,7 @@ class ZooExpert(BaseExpert):
         # 序列化算法配置供代码使用
         import json as _json
 
-        algo_configs_repr = _json.dumps(algo_configs, ensure_ascii=False).replace(": null", ": None")
+        algo_configs_repr = _json.dumps(algo_configs, ensure_ascii=False).replace(": null", ": None").replace(": true", ": True").replace(": false", ": False")
 
         plot_uses_pca = n_features > 2
         pca_import_line = (

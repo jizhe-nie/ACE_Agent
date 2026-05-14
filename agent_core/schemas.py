@@ -17,6 +17,7 @@ class DatasetBundle:
     shape_family: str = "generic"  # e.g., "non_convex", "manifold"
     feature_names: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    feature_mode: str = ""  # e.g., "raw", "resnet", "gap", "cnn_features"
 
 
 @dataclass

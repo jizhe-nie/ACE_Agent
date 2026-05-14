@@ -191,12 +191,42 @@ def _build_core_pre_inject() -> dict[str, Any]:
 
     These are available **without import** inside every sandbox execution.
     """
+    # ---- polyfill scipy.stats.weighted_median (added in scipy 1.13.0) ----
+    try:
+        import scipy.stats as _sp_stats
+        if not hasattr(_sp_stats, "weighted_median"):
+            import numpy as _np
+
+            def _weighted_median(data, weights):
+                """Polyfill for scipy>=1.13.0 weighted_median."""
+                data = _np.asarray(data)
+                weights = _np.asarray(weights, dtype=float)
+                if weights.sum() == 0:
+                    raise ValueError("Total weight must be positive.")
+                idx = _np.argsort(data)
+                cdf = _np.cumsum(weights[idx])
+                cdf /= cdf[-1]
+                cut = _np.searchsorted(cdf, 0.5)
+                if cut == 0:
+                    return float(data[idx[0]])
+                w0 = cdf[cut - 1]
+                w1 = cdf[cut]
+                if w1 - w0 < 1e-15:
+                    return float(data[idx[cut]])
+                t = (0.5 - w0) / (w1 - w0)
+                return float((1 - t) * data[idx[cut - 1]] + t * data[idx[cut]])
+
+            _sp_stats.weighted_median = _weighted_median
+    except Exception:
+        pass
+
     modules: dict[str, Any] = {}
     # --- pre-processing ---
     try:
-        from sklearn.preprocessing import StandardScaler  # noqa: F811
+        from sklearn.preprocessing import StandardScaler, MinMaxScaler  # noqa: F811
 
         modules["StandardScaler"] = StandardScaler
+        modules["MinMaxScaler"] = MinMaxScaler
     except Exception:
         pass
     # --- decomposition ---
@@ -364,12 +394,14 @@ SAFE_BUILTINS: dict[str, Any] = {
     # Standard exception hierarchy
     "AttributeError": AttributeError,
     "Exception": Exception,
+    "FileNotFoundError": FileNotFoundError,
     "ImportError": ImportError,
     "IndexError": IndexError,
     "KeyError": KeyError,
     "ModuleNotFoundError": ModuleNotFoundError,
     "NameError": NameError,
     "NotImplementedError": NotImplementedError,
+    "OSError": OSError,
     "PermissionError": PermissionError,
     "RuntimeError": RuntimeError,
     "TypeError": TypeError,
@@ -564,6 +596,15 @@ class CoderSandbox:
         merged_pre: dict[str, Any] = dict(CORE_PRE_INJECT)
         if pre_inject:
             merged_pre.update(pre_inject)
+
+        # Last-resort sanitization: convert JSON literals that LLMs leak into
+        # Python code.  Expert-layer _sanitize_python_literals() runs earlier,
+        # but code that reaches the sandbox through bypass paths (critic audit,
+        # ensemble internal runs, etc.) must also be protected.
+        import re as _re_sbx
+        code = _re_sbx.sub(r'\btrue\b', 'True', code)
+        code = _re_sbx.sub(r'\bfalse\b', 'False', code)
+        code = _re_sbx.sub(r'\bnull\b', 'None', code)
 
         artifacts: dict[str, Any] = {}
         exec_env: dict[str, Any] = {

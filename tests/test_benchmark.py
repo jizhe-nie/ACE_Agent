@@ -1300,8 +1300,8 @@ class TestEnsembleConsensusExpert:
         """Verify the MC circuit breaker constant exists and is reasonable."""
         from ACE_Agent.expert_sub_agents.ensemble_expert import \
             _MC_THRESHOLD, _MC_SAMPLE_PAIRS
-        assert _MC_THRESHOLD == 20000
-        assert _MC_SAMPLE_PAIRS == 10000
+        assert _MC_THRESHOLD == 5000
+        assert _MC_SAMPLE_PAIRS == 20000
 
     def test_ensemble_stores_coassoc_matrix(self) -> None:
         """Ensemble result must carry coassoc_matrix in params for frontend."""

@@ -15,9 +15,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy.sparse import csgraph as _csgraph
 from scipy.sparse import csr_matrix, spmatrix, issparse as _issparse
@@ -265,6 +262,10 @@ class GraphBuilder:
         title: str = "kNN Graph",
     ) -> str:
         """Save PNG with kNN graph edges overlaid on scatter of X[:, :2]."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
         _OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
         path = Path(path)
         if path.suffix != ".png":

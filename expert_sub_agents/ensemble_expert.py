@@ -30,10 +30,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
 
@@ -46,8 +42,8 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Circuit breaker threshold — above this N, switch to Monte Carlo sampling
 # ---------------------------------------------------------------------------
-_MC_THRESHOLD = 20_000
-_MC_SAMPLE_PAIRS = 10_000
+_MC_THRESHOLD = 5_000
+_MC_SAMPLE_PAIRS = 20_000
 
 # ---------------------------------------------------------------------------
 # Algorithm taxonomy for dynamic vote rebalancing (Phase 3: 3-way)
@@ -612,6 +608,9 @@ def _generate_consensus_plot(
         path = _OUTPUTS_DIR / f"ensemble_consensus_{uid}.png"
 
         # Chinese font setup for Windows
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
         import platform
         if platform.system() == "Windows":
             plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]

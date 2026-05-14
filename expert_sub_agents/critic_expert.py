@@ -53,7 +53,20 @@ class CriticExpert(BaseExpert):
 
         # ---- Sampling strategy for large datasets -------------------------
         n_total = dataset.X.shape[0]
-        audit_n = n_total if n_total <= 2000 else min(2000, max(1000, int(n_total * 0.15)))
+        n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
+
+        # Phase 6: auto-relax mode — force minimal sample to guarantee completion
+        _audit_relaxed = bool(getattr(settings, "audit_relaxed", False))
+        if _audit_relaxed:
+            audit_n = min(500, n_total)
+        elif n_features > 200:
+            # Extreme high-dim: tight cap to prevent audit collapse
+            audit_n = min(800, max(400, int(n_total * 0.06)))
+        elif n_features > 64:
+            # Mid-high dim: moderate cap
+            audit_n = min(1000, max(500, int(n_total * 0.10)))
+        else:
+            audit_n = n_total if n_total <= 2000 else min(2000, max(1000, int(n_total * 0.15)))
         audit_sampled = audit_n < n_total
 
         # ---- Pre-computed metrics from winner (avoid recomputation) --------
@@ -76,6 +89,10 @@ class CriticExpert(BaseExpert):
             "precomputed_metrics": precomputed,
             # Phase 5.3: fast audit mode
             "fast_audit": bool(getattr(settings, "fast_audit", False)),
+            # Phase 6: dimension context for audit reduction
+            "n_features": n_features,
+            "audit_dim_reduce": n_features > 32,
+            "audit_relaxed": _audit_relaxed,
         }
         try:
             results = self.execute_with_self_correction(dataset, "", settings)
@@ -116,6 +133,7 @@ class CriticExpert(BaseExpert):
     ) -> str:
         winner = self._audit_target or {}
         winner_json = json.dumps(winner, ensure_ascii=False, indent=2)
+        n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
 
         system_prompt = (
             "你是一个聚类审计专家。你的任务是审查一个已获胜的聚类结果的可信度。\n"
@@ -139,6 +157,8 @@ class CriticExpert(BaseExpert):
             "- audit_sample_size: 本次审计应使用的最大样本数（若 n_total > 2000）\n"
             "- audit_sampled: True 表示需要采样\n"
             "- precomputed_metrics: 专家已计算的指标，直接复用，禁止重复计算\n"
+            "- audit_relaxed: True 表示自适应宽松模式，所有 Bootstrap/Graph 任务跳过，\n"
+            "  仅执行最核心的 Hopkins + CVI + 简化审计，确保不超时。\n"
             "- fast_audit: True 表示快速审计模式（跳过 Bootstrap 和 Graph 任务）\n\n"
             "## 0. 审计前采样策略（Phase 5.3，必读）\n"
             "**规则：禁止在超过 2000 样本上执行全量审计！**\n"
@@ -150,9 +170,22 @@ class CriticExpert(BaseExpert):
             "  * 所有后续审计任务（Hopkins/Bootstrap/CVI/DBCV/Graph）均在子集上运行。\n"
             "  * 变量命名: _X_audit, _y_audit, _labels_audit（替代原始 X/y/labels）。\n"
             "- 若 audit_sampled == False: 直接使用原始数据，无需采样。\n\n"
+            "## 0.1 审计前维度压缩（Phase 6 高维审计加速 — 强制，必读）\n"
+            "**规则：当 n_features > 32 时，采样后必须立即执行 PCA 降至 16 维再进行审计！**\n"
+            f"- 当前数据维度: {n_features}（{'>32，触发强制 PCA→16D' if n_features > 32 else '≤32，无需降维'}）\n"
+            "- 若 n_features > 32:\n"
+            "  * 在采样得到 _X_audit 之后，立即: _pca_audit = PCA(n_components=16, random_state=42)\n"
+            "  * _X_audit = _pca_audit.fit_transform(_X_audit)\n"
+            "  * 记录: _audit_dim_reduced = True, _audit_original_dim = n_features\n"
+            "  * 解释方差: _audit_pca_variance = sum(_pca_audit.explained_variance_ratio_)\n"
+            "  * **所有后续任务（Hopkins/CVI/Bootstrap/DBCV/Graph）均在降维后的 _X_audit 上运行**\n"
+            "  * 降维理由: 64D+ 语义空间中噪声维度稀释信号，Hopkins/Bootstrap 在噪声主导空间不可靠。\n"
+            "    16D 保留了核心结构（通常 > 85% 方差），同时将审计计算耗时降低 4-8 倍，彻底解决超时。\n"
+            "- 若 n_features ≤ 32: 跳过此步骤，审计在原始特征空间进行。\n\n"
             "## 审计任务（全部必须完成，但 fast_audit 模式下跳过标注 [FAST_SKIP] 的任务）\n\n"
             "### 1. Hopkins Statistic（聚类趋势检验）\n"
             "- 用 _X_audit 的子集（最多 500 点）计算 Hopkins。\n"
+            "- **重要**: 若维度已通过 §0.1 压缩，Hopkins 将在 16D 核心空间计算（更可靠）。\n"
             "- 实现标准 Hopkins: H > 0.7 强趋势, H ≈ 0.5 随机, H < 0.3 无趋势\n\n"
             "### 2. CVI 多k扫描\n"
             "- 用 _X_audit 计算，k=2..min(15, sqrt(n_audit))\n"
@@ -190,6 +223,9 @@ class CriticExpert(BaseExpert):
             "- 特别规则: boundary_quality_score < 0.4 且 geodesic_distortion > 0.3 → endorsement 不得为 'endorsed'\n"
             "- 特别规则: topology_split_ratio > 0.5 → endorsement 不得为 'endorsed', action='RETRY'\n"
             "- 特别规则: 存在簇被切成 >= 3 个连通分量 → endorsement 降级为 'qualified_with_warning'\n"
+            "- **Phase 6 严格降级规则**: 当 |winner_k - CVI_consensus_k| > 3 且 Hopkins < 0.3 时，\n"
+            "  endorsement 必须为 'qualified_with_warning'，不得为 'endorsed' 或 'qualified'。\n"
+            "  原因：聚类数与统计共识严重矛盾 + 聚类倾向极弱 = 结果高度不可信。\n"
             "- 当 action='RETRY' 时，必须填写 retry_constraints：\n"
             "  - force_k: 根据 CVI 多指标投票得出的 k_consensus（若与 winner k 不一致）\n"
             "  - blocked_algorithms: 列出表现差的算法（如 stability<0.3 / DBCV<0 的算法）\n"

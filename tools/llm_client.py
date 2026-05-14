@@ -381,7 +381,11 @@ class UniversalLLMClient:
             "   - 当 score_source == 'silhouette' 时，排名反映的是内部凝聚度（轮廓系数），\n"
             "     注意它对非凸簇结构存在结构性偏差（会偏爱 KMeans/GMM 这类球形聚类）。\n"
             "   在总结里点明本次排名使用了哪种度量，以便用户理解为什么冠军算法胜出。\n"
-            "   若 score_source 缺失则按原有行为处理（不要强行提及）。"
+            "   若 score_source 缺失则按原有行为处理（不要强行提及）。\n"
+            "6. **关键: 若 all_algorithms_failed == true, 你必须以红色预警开头:**\n"
+            "   '### ⛔ FAILURE / NO VALID CLUSTERS — 聚类全面失败 (ARI < 0.2)'\n"
+            "   并在总结中明确指出: 所有算法在欧氏空间中均无法有效捕捉数据结构，\n"
+            "   该数据需要非欧氏距离度量或深度学习方法。"
         )
         messages = [{"role": "user", "content": json.dumps(summary_payload, ensure_ascii=False)}]
         return self.chat_completion(messages, system_prompt, caller="summarize_report")

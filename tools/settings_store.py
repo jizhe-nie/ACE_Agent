@@ -46,6 +46,14 @@ class ACEJsonEncoder(json.JSONEncoder):
             return str(obj)
         if is_dataclass(obj):
             return asdict(obj)
+        # numpy scalar types — some numpy versions don't inherit from Python
+        # builtins so the stdlib json encoder rejects them
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
         return super().default(obj)
 
 
@@ -76,28 +84,73 @@ class SettingsStore:
 
 
 class SessionManager:
+    _MAX_FILE_MB: int = 50
+    _MAX_SESSIONS: int = 30
+
     def __init__(self, path: Path = SESSIONS_PATH):
         self.path = path
         self.sessions = self._load()
 
     def _load(self) -> list[dict]:
-        if self.path.exists():
+        if not self.path.exists():
+            return []
+        # Refuse to load files that are too large — they cause minutes-long
+        # hangs and consume gigabytes of memory during JSON parse.
+        file_mb = self.path.stat().st_size / (1024 * 1024)
+        if file_mb > self._MAX_FILE_MB:
+            _backup = self.path.with_suffix(".json.bak")
             try:
-                return json.loads(self.path.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
+                self.path.rename(_backup)
+            except OSError:
+                pass
+            return []
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def _strip_heavy_data(self, data: Any) -> Any:
+        """Recursively remove large arrays/lists to keep session files small."""
+        if isinstance(data, dict):
+            # Target common large keys in our project
+            clean_dict = {}
+            for k, v in data.items():
+                if k in ("X", "y", "labels", "code", "feature_names", "decision_trace", "ranking"):
+                    clean_dict[k] = [] # Stripped
+                elif k == "thought" and isinstance(v, str) and len(v) > 5000:
+                    clean_dict[k] = v[:5000] + "... [TRUNCATED]"
+                else:
+                    clean_dict[k] = self._strip_heavy_data(v)
+            return clean_dict
+        if isinstance(data, list):
+            # If it's a list of many items and they aren't messages, it might be heavy
+            if len(data) > 100:
+                # Check if it's a list of dicts (like messages), if so, keep it but strip each
+                if len(data) > 0 and isinstance(data[0], dict) and "role" in data[0]:
+                    return [self._strip_heavy_data(i) for i in data]
+                return [] # Strip other large lists
+            return [self._strip_heavy_data(i) for i in data]
+        return data
 
     def save_session(self, session_id: str, messages: list[dict], metadata: dict = None):
+        # Strip heavy data from messages before saving
+        clean_messages = self._strip_heavy_data(messages)
+        
         session_data = {
             "id": session_id,
-            "messages": messages,
+            "messages": clean_messages,
             "metadata": metadata or {},
             "updated_at": datetime.now().isoformat(),
         }
 
+        # Check if session data actually changed (ignore updated_at)
         for i, s in enumerate(self.sessions):
             if s["id"] == session_id:
+                if (
+                    s.get("messages") == clean_messages
+                    and s.get("metadata", {}) == (metadata or {})
+                ):
+                    return  # No changes, skip disk write
                 session_data["created_at"] = s.get("created_at", session_data["updated_at"])
                 self.sessions[i] = session_data
                 break
@@ -105,15 +158,30 @@ class SessionManager:
             session_data["created_at"] = session_data["updated_at"]
             self.sessions.insert(0, session_data)
 
+        # Cap history to prevent session file inflation
+        if len(self.sessions) > self._MAX_SESSIONS:
+            self.sessions = self.sessions[: self._MAX_SESSIONS]
+
         self.path.write_text(
             json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # Post-write safety valve: if the file still grew beyond limit,
+        # aggressively trim and re-write.
+        _written_mb = self.path.stat().st_size / (1024 * 1024)
+        if _written_mb > self._MAX_FILE_MB:
+            _keep = max(3, self._MAX_SESSIONS // 2)
+            self.sessions = self.sessions[:_keep]
+            self.path.write_text(
+                json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
     def delete_session(self, session_id: str):
+        old_len = len(self.sessions)
         self.sessions = [s for s in self.sessions if s["id"] != session_id]
-        self.path.write_text(
-            json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        if len(self.sessions) != old_len:
+            self.path.write_text(
+                json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
 
 def load_settings() -> dict:

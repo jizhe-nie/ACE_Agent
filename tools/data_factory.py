@@ -54,6 +54,249 @@ DATASET_LABELS = {
     "custom": "自定义上传数据",
 }
 
+# ---------------------------------------------------------------------------
+# Dataset groups: datasets with multiple feature representations.
+# Each group has a label and a list of modes.  A mode's "key" is the flat
+# dataset_name understood by generate_dataset().
+# ---------------------------------------------------------------------------
+DATASET_GROUPS: dict[str, dict] = {
+    "cifar10": {
+        "label": "CIFAR-10",
+        "modes": [
+            {
+                "key": "cifar10_resnet",
+                "label": "ResNet-18 特征 (512D)",
+                "recommended": True,
+                "desc": "ImageNet预训练CNN，语义特征，聚类效果最好",
+            },
+            {
+                "key": "cifar10_gap",
+                "label": "GAP 降维 (64D)",
+                "recommended": False,
+                "desc": "全局平均池化，速度快但语义弱于ResNet",
+            },
+            {
+                "key": "cifar10_raw",
+                "label": "原始像素 (3072D) ⚠️",
+                "recommended": False,
+                "desc": "像素空间欧氏距离不承载语义，聚类基本无效",
+            },
+        ],
+    },
+}
+
+# Reverse lookup: group label → group key
+_GROUP_LABEL_TO_KEY: dict[str, str] = {g["label"]: k for k, g in DATASET_GROUPS.items()}
+
+# Set of flat keys that belong to a group (so list_demo_datasets can exclude them)
+_GROUPED_FLAT_KEYS: set[str] = {
+    m["key"] for g in DATASET_GROUPS.values() for m in g["modes"]
+}
+
+
+def _decompose_image_shape(n_features: int) -> tuple[int, int, int] | None:
+    """Try to decompose *n_features* into H×W or H×W×C image dimensions.
+
+    Returns (H, W, C) on success, or None if no reasonable decomposition exists.
+    C=1 for grayscale, C=3 for RGB.
+    Only triggers for plausible image dimensions: n_features ≥ 256 (≈16×16)
+    and each spatial dimension ≥ 8.
+    """
+    if n_features < 256:
+        return None
+    for channels in (3, 1):
+        if n_features % channels != 0:
+            continue
+        n_flat = n_features // channels
+        root = int(round(n_flat ** 0.5))
+        for h in range(max(8, root - 8), root + 9):
+            if n_flat % h == 0:
+                w = n_flat // h
+                if 8 <= w <= 2048 and 0.2 <= h / w <= 5.0:
+                    return (h, w, channels)
+    return None
+
+
+def _infer_shape_family(X: np.ndarray, n_features: int) -> str:
+    """Quick heuristic to infer shape_family for datasets without metadata.
+
+    Uses PCA variance concentration and dimension count as signals.
+    """
+    if n_features <= 3:
+        # Low-dim data — could be manifold or spherical
+        try:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=min(n_features, 2), random_state=42)
+            pca.fit(X)
+            ratio = pca.explained_variance_ratio_
+            # If first component dominates, likely manifold
+            if len(ratio) >= 2 and ratio[0] > 0.75:
+                return "manifold"
+            return "non_convex"
+        except Exception:
+            return "manifold"
+
+    # For higher dimensions, check PCA variance concentration
+    try:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=min(10, n_features), random_state=42)
+        pca.fit(X[: min(2000, X.shape[0])])
+        cumsum = np.cumsum(pca.explained_variance_ratio_)
+        # If 2 components capture < 30% variance → sparse/scattered
+        if cumsum[1] < 0.3:
+            return "sparse"
+        # If 5 components capture > 90% → likely spherical low-rank
+        if len(cumsum) >= 5 and cumsum[4] > 0.9:
+            return "spherical"
+        if len(cumsum) >= 3 and cumsum[2] > 0.8:
+            return "spherical"
+        return "manifold"
+    except Exception:
+        return "unknown"
+
+
+def _analyze_uploaded_data(
+    X: np.ndarray, n_features: int, n_samples: int
+) -> dict:
+    """Analyze uploaded data and return detection results + recommendations.
+
+    Returns a dict with keys:
+    - detected_type: "image" | "tabular"
+    - image_shape: (H, W, C) tuple if image, else None
+    - recommendations: list of dicts with mode/label/reason/priority
+    """
+    result: dict = {
+        "detected_type": "tabular",
+        "image_shape": None,
+        "recommendations": [],
+    }
+
+    # 1. Image detection from feature dimensions
+    img_shape = _decompose_image_shape(n_features)
+    if img_shape:
+        h, w, c = img_shape
+        result["detected_type"] = "image"
+        result["image_shape"] = img_shape
+        if c == 1:
+            size_str = f"{h}×{w} (灰度)"
+        else:
+            size_str = f"{h}×{w}×{c} (RGB)"
+        result["recommendations"].append({
+            "mode": "cnn_features",
+            "label": f"提取 CNN 特征后聚类 ({size_str})",
+            "reason": (
+                f"检测到图像数据 {size_str}，"
+                f"原始像素空间的欧氏距离不承载语义信息。"
+                f"建议使用预训练 CNN 提取语义特征后再聚类。"
+            ),
+            "priority": "strongly_recommended",
+        })
+        result["recommendations"].append({
+            "mode": "raw_pixels",
+            "label": f"直接使用原始像素聚类 ({n_features}D) ⚠️",
+            "reason": (
+                "像素空间聚类在 ≥10D 时失效——类内散度远大于类间差异。"
+                "保留此选项仅用于对比验证。"
+            ),
+            "priority": "not_recommended",
+        })
+
+    # 2. Extreme high-dim warning
+    if n_features > 500 and not img_shape:
+        target_dim = min(64, n_features // 10)
+        result["recommendations"].append({
+            "mode": "pca_first",
+            "label": f"PCA 降至 {target_dim}D 后聚类",
+            "reason": (
+                f"当前 {n_features} 维，距离矩阵 O(N²D) 计算将极慢"
+                f"且受维度灾难影响。建议先 PCA 降维。"
+            ),
+            "priority": "recommended",
+        })
+
+    # 3. Large sample warning
+    if n_samples > 10000:
+        result["recommendations"].append({
+            "mode": "sample_first",
+            "label": f"降采样至 {min(5000, n_samples // 4)} 样本",
+            "reason": (
+                f"当前 {n_samples} 样本，k-NN 图构建 O(N²) 将严重超时。"
+                f"建议降采样后再分析。"
+            ),
+            "priority": "recommended",
+        })
+
+    return result
+
+
+def _extract_cnn_features(
+    images: np.ndarray, original_shape: tuple | None = None
+) -> np.ndarray:
+    """Extract ResNet-18 features from uploaded image data.
+
+    Parameters
+    ----------
+    images : np.ndarray, shape (N, D)
+        Flattened image array.  If *original_shape* is not given the
+        function tries to auto-decompose the dimension count.
+    original_shape : (H, W) or (H, W, C), optional
+
+    Returns
+    -------
+    features : np.ndarray, shape (N, 512)
+    """
+    try:
+        import torch
+        import torch.nn as nn
+        from torchvision import transforms as T
+        from torchvision.models import resnet18, ResNet18_Weights
+    except ImportError:
+        raise ImportError("需要 PyTorch + torchvision 来提取 CNN 特征")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    weights = ResNet18_Weights.IMAGENET1K_V1 if ResNet18_Weights else None
+    model = resnet18(weights=weights)
+    model = nn.Sequential(*list(model.children())[:-1])
+    model = model.to(device).eval()
+
+    # Reshape: (N, D) → (N, C, H, W)
+    n_samples, n_feat = images.shape
+    if original_shape and len(original_shape) == 2:
+        h, w = original_shape
+        c = 1
+    elif original_shape and len(original_shape) == 3:
+        h, w, c = original_shape
+    else:
+        shape = _decompose_image_shape(n_feat)
+        if shape is None:
+            raise ValueError(f"Cannot decompose {n_feat}D into image dimensions")
+        h, w, c = shape
+
+    # Reshape to (N, H, W, C) then to (N, C, H, W)
+    if c == 1:
+        imgs_reshaped = images.reshape(n_samples, h, w)
+        imgs_reshaped = np.stack([imgs_reshaped] * 3, axis=1)
+    else:
+        imgs_reshaped = images.reshape(n_samples, h, w, c).transpose(0, 3, 1, 2)
+
+    transform = T.Compose([
+        T.Resize(224),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    batch_size = 256
+    features_list = []
+    for i in range(0, n_samples, batch_size):
+        batch = torch.from_numpy(imgs_reshaped[i: i + batch_size]).float().to(device)
+        batch = transform(batch) if batch.shape[-1] >= 32 else transform(
+            torch.nn.functional.interpolate(batch, size=(224, 224), mode="bilinear")
+        )
+        with torch.no_grad():
+            feats = model(batch).squeeze(-1).squeeze(-1)
+        features_list.append(feats.cpu().numpy())
+
+    return np.concatenate(features_list, axis=0)
+
 
 def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
     path = Path(file_path)
@@ -102,15 +345,55 @@ def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
     if X.shape[1] == 0:
         raise ValueError("数据集中未找到有效的数值型特征列。")
 
+    n_features = X.shape[1]
+    n_samples = X.shape[0]
+
+    # Auto-detect image shape from feature dimensions
+    img_shape = _decompose_image_shape(n_features)
+    is_image = img_shape is not None
+    original_shape = (img_shape[0], img_shape[1]) if img_shape else None
+    if is_image:
+        logger.info(
+            f"自动检测到图像数据: {n_features}D = {img_shape[0]}×{img_shape[1]}"
+            f"{'×' + str(img_shape[2]) if img_shape[2] > 1 else ''}"
+        )
+
+    # Auto-infer shape_family for custom datasets
+    shape_family = _infer_shape_family(X, n_features)
+    logger.info(f"推断数据结构类型: {shape_family} (n_features={n_features})")
+
+    # Estimate expected cluster count from label column
+    expected_clusters = None
+    if y is not None:
+        expected_clusters = int(np.unique(y).size)
+        if expected_clusters < 2:
+            expected_clusters = None
+
+    meta = {
+        "file_path": str(path),
+        "original_columns": df.columns.tolist(),
+        "is_image": is_image,
+        "source": "custom_upload",
+        "n_samples": n_samples,
+    }
+    if original_shape:
+        meta["original_shape"] = original_shape
+    if expected_clusters is not None:
+        meta["expected_clusters"] = expected_clusters
+
     return DatasetBundle(
         name="custom",
         display_name=f"自定义数据 ({path.name})",
         X=X.astype(float),
         y=y if y is None else y.astype(int),
-        description=f"从文件 {path.name} 加载的自定义数据集，包含 {X.shape[0]} 个样本和 {X.shape[1]} 个数值特征。",
-        shape_family="unknown",
+        description=(
+            f"从文件 {path.name} 加载的自定义数据集，"
+            f"包含 {n_samples} 个样本和 {n_features} 个数值特征。"
+            + (f" 自动检测为图像数据 ({img_shape[0]}×{img_shape[1]})。" if is_image else "")
+        ),
+        shape_family=shape_family,
         feature_names=feature_names,
-        metadata={"file_path": str(path), "original_columns": df.columns.tolist()},
+        metadata=meta,
     )
 
 
@@ -152,7 +435,20 @@ def infer_dataset_from_prompt(prompt: str) -> str | None:
 
 
 def list_demo_datasets() -> list[str]:
-    return list(DATASET_LABELS.keys())
+    """Return keys for the UI selector.
+
+    Flat datasets appear as their raw key.  Multi-mode datasets appear as
+    ``group:<group_key>`` so the UI can show a mode picker.
+    """
+    keys: list[str] = []
+    for k in DATASET_LABELS:
+        if k == "custom":
+            continue
+        if k not in _GROUPED_FLAT_KEYS:
+            keys.append(k)
+    for gk in DATASET_GROUPS:
+        keys.append(f"group:{gk}")
+    return keys
 
 
 def generate_dataset(
@@ -252,7 +548,8 @@ def generate_dataset(
             description="原始手写数字像素数据 (784维)，此处截取前2000个样本。",
             shape_family="manifold",
             feature_names=[f"px{i}" for i in range(784)],
-            metadata={"expected_clusters": 10},
+            metadata={"expected_clusters": 10, "is_image": True,
+                      "original_shape": (28, 28)},
         )
 
     if dataset_name in ("mnist_full", "fashion_mnist"):
@@ -312,6 +609,8 @@ def generate_dataset(
 
     if dataset_name in ("cifar10_raw", "cifar10_gap", "cifar10_resnet"):
         mode = dataset_name.replace("cifar10_", "")
+        if mode == "resnet":
+            mode = "resnet18"
         return _load_cifar10(feature_mode=mode)
 
     if dataset_name == "pendigits":
@@ -572,8 +871,8 @@ def _load_usps() -> DatasetBundle:
     """USPS handwritten digits. 256 features, 9298 samples, 10 classes."""
     logger.info("正在从 OpenML 加载 USPS 数据集...")
     data = fetch_openml("usps", version=1, parser="auto")
-    X = data.data.astype(float)
-    y = data.target.astype(int)
+    X = np.asarray(data.data, dtype=float)
+    y = np.asarray(data.target, dtype=int)
     return DatasetBundle(
         name="usps",
         display_name=DATASET_LABELS["usps"],
@@ -609,24 +908,55 @@ def _load_reuters() -> DatasetBundle:
                 docs.append(" ".join(_reuters.words(fid)))
                 labels.append(target_cats.index(matched[0]))
     except Exception:
-        logger.warning("NLTK Reuters 加载失败，使用 sklearn fetch_openml 回退...")
-        data = fetch_openml("reuters-21578", version=1, parser="auto")
-        X_raw = data.data
-        y_raw = data.target
-        if hasattr(X_raw, "toarray"):
-            X_raw = X_raw.toarray()
-        X = X_raw.astype(float)
-        y = pd.factorize(y_raw)[0]
+        logger.warning("NLTK Reuters 加载失败，尝试 sklearn fetch_openml 回退...")
+        openml_attempts = [
+            {"name": "Reuters-21578", "version": 1},
+            {"name": "reuters-21578", "version": 1},
+            {"data_id": 433},
+        ]
+        data = None
+        for attempt in openml_attempts:
+            try:
+                data = fetch_openml(parser="auto", **attempt)
+                break
+            except Exception:
+                continue
+        if data is not None:
+            X_raw = data.data
+            y_raw = data.target
+            if hasattr(X_raw, "toarray"):
+                X_raw = X_raw.toarray()
+            X = np.asarray(X_raw, dtype=float)
+            y = np.asarray(pd.factorize(y_raw)[0], dtype=int)
+            return DatasetBundle(
+                name="reuters",
+                display_name=DATASET_LABELS["reuters"],
+                X=X,
+                y=y,
+                description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，~10000 样本，4 类。",
+                shape_family="sparse",
+                feature_names=[f"word_{i}" for i in range(X.shape[1])],
+                metadata={"expected_clusters": 4, "source": "OpenML/Reuters",
+                          "n_samples": len(X)},
+            )
+        # Ultimate fallback: synthetic sparse text-like data
+        logger.warning("OpenML Reuters 回退也失败，生成合成稀疏文本数据作为兜底...")
+        rng = np.random.RandomState(42)
+        n_samples = 1000
+        n_features = 500
+        X = rng.uniform(0, 1, (n_samples, n_features)) * (
+            rng.uniform(0, 1, n_features) > 0.85
+        )
+        y = rng.randint(0, 4, n_samples)
         return DatasetBundle(
             name="reuters",
             display_name=DATASET_LABELS["reuters"],
             X=X,
-            y=y.astype(int),
-            description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，~10000 样本，4 类。",
+            y=y,
+            description="Reuters-21578 替代数据（原数据集暂不可用）。",
             shape_family="sparse",
-            feature_names=[f"word_{i}" for i in range(X.shape[1])],
-            metadata={"expected_clusters": 4, "source": "NLTK/Reuters",
-                      "n_samples": len(X)},
+            metadata={"expected_clusters": 4, "source": "synthetic_fallback",
+                      "n_samples": n_samples},
         )
 
     vectorizer = TfidfVectorizer(max_features=2000, stop_words="english")
@@ -648,14 +978,13 @@ def _load_har() -> DatasetBundle:
     """Human Activity Recognition. 561 features, 10299 samples, 6 classes."""
     logger.info("正在从 OpenML 加载 HAR 数据集...")
     data = fetch_openml("har", version=1, parser="auto")
-    X = data.data.astype(float)
-    y = data.target
-    y = pd.factorize(y)[0]
+    X = np.asarray(data.data, dtype=float)
+    y = pd.factorize(data.target)[0]
     return DatasetBundle(
         name="har",
         display_name=DATASET_LABELS["har"],
         X=X,
-        y=y.astype(int),
+        y=np.asarray(y, dtype=int),
         description="HAR 人体活动识别：561 维传感器时序特征，10299 样本，6 类。",
         shape_family="spherical",
         feature_names=[f"feat_{i}" for i in range(561)],
@@ -689,10 +1018,15 @@ def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
     labels_raw = np.concatenate([trainset.targets, testset.targets], axis=0)
     y = LabelEncoder().fit_transform(labels_raw.astype(str))
 
+    _is_image = False
+    _original_shape = None
     if feature_mode == "raw":
         X = images.reshape(images.shape[0], -1)
         feat_names = [f"px{i}" for i in range(3072)]
         n_feat = 3072
+        _is_image = True
+        _original_shape = (32, 32)
+        _image_channels = 3
     elif feature_mode == "gap":
         # 8x8 global average pooling on each channel
         X_gap = images.reshape(images.shape[0], 3, 32, 32)
@@ -725,7 +1059,7 @@ def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
         for i in range(0, len(images), batch_size):
             batch_imgs = images[i: i + batch_size]
             batch_tensors = torch.stack(
-                [transform_resnet(T.ToPILImage()(img.transpose(1, 2, 0).astype(np.uint8)))
+                [transform_resnet(T.ToPILImage()(img.astype(np.uint8)))
                  for img in batch_imgs]
             ).to(device)
             with torch.no_grad():
@@ -737,14 +1071,20 @@ def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
 
     return DatasetBundle(
         name=f"cifar10_{feature_mode}",
-        display_name=DATASET_LABELS[f"cifar10_{feature_mode}"],
+        display_name=DATASET_LABELS.get(
+            f"cifar10_{feature_mode}",
+            DATASET_LABELS.get("cifar10_resnet", f"CIFAR-10 {feature_mode}")
+        ),
         X=X.astype(float),
         y=y.astype(int),
         description=f"CIFAR-10 ({feature_mode} 特征): {n_feat} 维，60000 样本，10 类。",
         shape_family="manifold",
         feature_names=feat_names,
+        feature_mode=feature_mode,
         metadata={"expected_clusters": 10, "source": "torchvision/CIFAR-10",
-                  "n_samples": len(X), "feature_mode": feature_mode},
+                  "n_samples": len(X), "feature_mode": feature_mode,
+                  "is_image": _is_image,
+                  "original_shape": _original_shape},
     )
 
 
@@ -752,14 +1092,13 @@ def _load_pendigits() -> DatasetBundle:
     """Pendigits pen-based handwritten digits. 16 features, 10992 samples, 10 classes."""
     logger.info("正在从 OpenML 加载 Pendigits 数据集...")
     data = fetch_openml("pendigits", version=1, parser="auto")
-    X = data.data.astype(float)
-    y = data.target
-    y = pd.factorize(y)[0]
+    X = np.asarray(data.data, dtype=float)
+    y = pd.factorize(data.target)[0]
     return DatasetBundle(
         name="pendigits",
         display_name=DATASET_LABELS["pendigits"],
         X=X,
-        y=y.astype(int),
+        y=np.asarray(y, dtype=int),
         description="Pendigits 笔迹手写数字：16 维笔划特征，10992 样本，10 类。",
         shape_family="spherical",
         feature_names=[f"feat_{i}" for i in range(16)],
@@ -771,14 +1110,13 @@ def _load_letter() -> DatasetBundle:
     """Letter Recognition. 16 features, 20000 samples, 26 classes."""
     logger.info("正在从 OpenML 加载 Letter Recognition 数据集...")
     data = fetch_openml("letter", version=1, parser="auto")
-    X = data.data.astype(float)
-    y = data.target
-    y = pd.factorize(y)[0]
+    X = np.asarray(data.data, dtype=float)
+    y = pd.factorize(data.target)[0]
     return DatasetBundle(
         name="letter",
         display_name=DATASET_LABELS["letter"],
         X=X,
-        y=y.astype(int),
+        y=np.asarray(y, dtype=int),
         description="Letter 字母识别：16 维像素统计特征，20000 样本，26 类。",
         shape_family="spherical",
         feature_names=[f"feat_{i}" for i in range(16)],
@@ -797,9 +1135,8 @@ def _load_coil20() -> DatasetBundle:
     X = data.data
     if hasattr(X, "toarray"):
         X = X.toarray()
-    X = X.astype(float)
-    y = data.target
-    y = pd.factorize(y)[0]
+    X = np.asarray(X, dtype=float)
+    y = pd.factorize(data.target)[0]
     return DatasetBundle(
         name="coil20",
         display_name=DATASET_LABELS["coil20"],
@@ -809,5 +1146,6 @@ def _load_coil20() -> DatasetBundle:
         shape_family="manifold",
         feature_names=[f"feat_{i}" for i in range(X.shape[1])],
         metadata={"expected_clusters": 20, "source": "Columbia/COIL-20",
-                  "n_samples": len(X)},
+                  "n_samples": len(X), "is_image": True,
+                  "original_shape": (32, 32)},
     )

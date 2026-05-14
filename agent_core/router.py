@@ -18,13 +18,31 @@ class MasterRouter:
     避免误触发昂贵的新任务流程。
     """
 
-    def analyze_intent(self, prompt: str, history: list[Any], settings: LLMSettings) -> dict[str, Any]:
-        """使用 LLM 识别意图。强制要求返回 JSON。"""
+    def analyze_intent(
+        self,
+        prompt: str,
+        history: list[Any],
+        settings: LLMSettings,
+        dataset_context: str = "",
+    ) -> dict[str, Any]:
+        """使用 LLM 识别意图。强制要求返回 JSON。
+
+        *dataset_context*: 可选，UI 中当前已选中的数据集名称。
+        当用户说"分析该数据"时，若 router 知道已有数据集就绪，
+        则会正确判为 NEW_TASK 而非保守的 FOLLOW_UP。
+        """
         if not settings.is_configured:
             return {"intent": "NEW_TASK", "reasoning": "LLM 未配置，默认开启新任务"}
 
         client = UniversalLLMClient(settings)
         history_context = "\n".join([f"{m['role']}: {m['content'][:100]}" for m in history[-3:]])
+
+        dataset_hint = ""
+        if dataset_context:
+            dataset_hint = (
+                f"**当前环境**：用户已在界面中选择了数据集「{dataset_context}」，数据已加载就绪，"
+                f"可以立即运行聚类分析。\n"
+            )
 
         system_prompt = (
             "你是一个数据科学专家路由，必须将用户输入归类为以下三种意图之一，并以 JSON 返回。\n\n"
@@ -63,7 +81,7 @@ class MasterRouter:
             '"target_dataset": "...", "reasoning": "..."}'
         )
 
-        user_input = f"对话历史：\n{history_context}\n\n当前输入：{prompt}"
+        user_input = f"{dataset_hint}对话历史：\n{history_context}\n\n当前输入：{prompt}"
         res = client.chat_completion([{"role": "user", "content": user_input}], system_prompt)
 
         try:

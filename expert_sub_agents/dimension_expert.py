@@ -203,6 +203,43 @@ if _d5.get("active", True) and _AE_OK and _d > 32:
             "labels": [], "metrics": {"score": 0.0, "error": str(_e5)}, "plot_path": ""}
 
 # ========================================================================
+# PIPELINE 5B: Res-Attention AE + KMeans  (GAP/embedding features, Phase 6)
+#             Uses residual blocks + self-attention bottleneck for semantic
+#             features where each dimension carries classification signal.
+# ========================================================================
+_RES_AE_OK = False
+try:
+    {RES_AE_IMPORT}
+    _RES_AE_OK = True
+except Exception:
+    pass
+
+_d5b = _DECISIONS.get("pipelines", {}).get("res_ae_kmeans", {})
+if _d5b.get("active", True) and _RES_AE_OK and _d > 32:
+    _k5b = int(_d5b.get("k", _k0))
+    _latent5b = int(_d5b.get("latent_dim", min(8, max(2, _d // 4))))
+    _epochs5b = int(_d5b.get("epochs", 100))
+    _hidden5b = _d5b.get("hidden_dims", None)
+    _lr5b = float(_d5b.get("learning_rate", 1e-3))
+    _drop5b = float(_d5b.get("dropout", 0.2))
+    _patience5b = int(_d5b.get("early_stopping_patience", 15))
+    _noise5b = float(_d5b.get("noise_std", 0.15))
+    _heads5b = int(_d5b.get("num_heads", 4))
+    _cluster5b = str(_d5b.get("cluster_method", "gmm"))
+    try:
+        _result5b = _res_ae_pipe(
+            _X, k=_k5b, latent_dim=_latent5b, epochs=_epochs5b,
+            hidden_dims=_hidden5b, learning_rate=_lr5b,
+            dropout=_drop5b, early_stopping_patience=_patience5b,
+            noise_std=_noise5b, num_heads=_heads5b,
+            cluster_method=_cluster5b, normalize="{NORMALIZE}",
+        )
+        artifacts["ResAE_KMeans"] = _result5b
+    except Exception as _e5b:
+        artifacts["ResAE_KMeans_error"] = {
+            "labels": [], "metrics": {"score": 0.0, "error": str(_e5b)}, "plot_path": ""}
+
+# ========================================================================
 # PIPELINE 6: DEC / IDEC 联合优化 (high-dim data, KL divergence fine-tune)
 #            Uses Conv-DEC for image data, MLP DEC otherwise.
 # ========================================================================
@@ -294,6 +331,13 @@ _DECISION_SYSTEM_PROMPT = (
     "   * Conv-AE 结构: 3层卷积编码器(32→64→128 filters) + 对称解码器\n"
     "6. `dec`          — DEC/IDEC KL散度联合优化 (仅 n_features>32 自动激活，n_samples需>200)\n"
     "   * 对于图像数据，系统自动使用 Conv-DEC (Conv-AE 骨干 + KL 微调)\n"
+    "8. `res_ae_kmeans` — 残差+自注意力 AE + KMeans/GMM (Phase 6, GAP/嵌入特征首选)\n"
+    "   * 专为语义特征设计（如 CIFAR-10 GAP 64D），非图像非原始像素\n"
+    "   * 核心创新: 残差连接 + Multi-Head Self-Attention 隐空间瓶颈\n"
+    "   * Self-Attention 在编码器最深隐藏层运行，学习各特征维度之间的交互\n"
+    "   * 残差连接防止深度堆叠时的梯度消失\n"
+    "   * **当数据为 GAP/嵌入特征时，此管线优于普通 ae_kmeans**\n"
+    "   * 仅对非图像的高维数据 (n_features>32) 自动激活\n"
     "7. `selflabel`     — Conv-AE + GMM 师生自蒸馏 (仅图像数据, n_features>32 自动激活)\n"
     "   * Phase A: Conv-AE 预训练 (ReflectionPad2d + Latent BN + Contrastive Loss)\n"
     "   * Phase B: GMM 伪标签 → 冻结Decoder → Cross-Entropy 微调 Encoder\n"
@@ -390,6 +434,10 @@ _DECISION_SYSTEM_PROMPT = (
     '                    "pretrain_epochs": <int>, "finetune_epochs": <int>,\n'
     '                    "hidden_dims": [<int>, ...], "learning_rate": <float>,\n'
     '                    "dropout": <float>, "gamma": <float>, "noise_std": <float>},\n'
+    '    "res_ae_kmeans": {"active": true, "latent_dim": <int>, "epochs": <int>, "k": <int>,\n'
+    '                    "hidden_dims": [<int>, ...], "learning_rate": <float>,\n'
+    '                    "dropout": <float>, "num_heads": <int>,\n'
+    '                    "noise_std": <float>, "cluster_method": "gmm"},\n'
     '    "selflabel":   {"active": true, "latent_dim": 32, "k": <int>,\n'
     '                    "ae_epochs": 150, "cluster_epochs": 30,\n'
     '                    "n_iterations": 3, "dropout": 0.2,\n'
@@ -519,6 +567,19 @@ def _build_smart_defaults(
                 "noise_std": ae_noise,
                 "cluster_method": ae_cluster,
             },
+            "res_ae_kmeans": {
+                "active": n_features > 32,
+                "latent_dim": latent_dim,
+                "epochs": ae_epochs,
+                "k": k,
+                "hidden_dims": hidden_dims,
+                "learning_rate": ae_lr,
+                "dropout": ae_dropout,
+                "early_stopping_patience": ae_patience,
+                "noise_std": ae_noise,
+                "num_heads": 4,
+                "cluster_method": ae_cluster,
+            },
             "dec": {
                 "active": n_features > 32 and n_samples > 200,
                 "latent_dim": latent_dim,
@@ -581,6 +642,12 @@ class DimensionExpert(BaseExpert):
             from ACE_Agent.tools.ae_pipeline import conv_selflabel_pipeline  # noqa: F811
 
             pre_inject["conv_selflabel_pipeline"] = conv_selflabel_pipeline
+        except Exception:
+            pass
+        try:
+            from ACE_Agent.tools.ae_pipeline import res_ae_kmeans_pipeline  # noqa: F811
+
+            pre_inject["res_ae_kmeans_pipeline"] = res_ae_kmeans_pipeline
         except Exception:
             pass
         try:
@@ -673,6 +740,7 @@ class DimensionExpert(BaseExpert):
             ae_import = "from ACE_Agent.tools.ae_pipeline import conv_ae_kmeans_pipeline as _ae_pipe"
             dec_import = "from ACE_Agent.tools.dec_pipeline import conv_dec_pipeline as _dec_pipe"
             selflabel_import = "from ACE_Agent.tools.ae_pipeline import conv_selflabel_pipeline as _sl_pipe"
+            res_ae_import = ""  # Res-AE is for tabular GAP features, not images
             ae_extra = f", input_size={input_size}, base_filters=32"
             dec_extra = f", input_size={input_size}, base_filters=32"
             # Update decisions with conv-specific defaults
@@ -700,6 +768,7 @@ class DimensionExpert(BaseExpert):
         else:
             ae_import = "from ACE_Agent.tools.ae_pipeline import ae_kmeans_pipeline as _ae_pipe"
             dec_import = "from ACE_Agent.tools.dec_pipeline import dec_pipeline as _dec_pipe"
+            res_ae_import = "from ACE_Agent.tools.ae_pipeline import res_ae_kmeans_pipeline as _res_ae_pipe"
             ae_extra = ""
             dec_extra = ""
 
@@ -711,6 +780,7 @@ class DimensionExpert(BaseExpert):
             .replace("{SCALER_CLASS}", scaler_class)
             .replace("{NORMALIZE}", normalize)
             .replace("{AE_IMPORT}", ae_import)
+            .replace("{RES_AE_IMPORT}", res_ae_import if not is_image else "")
             .replace("{DEC_IMPORT}", dec_import)
             .replace("{SELFLABEL_IMPORT}", selflabel_import)
             .replace("{AE_EXTRA_ARGS}", ae_extra)

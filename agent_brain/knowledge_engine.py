@@ -15,29 +15,56 @@ logging.getLogger("chromadb").setLevel(logging.ERROR)
 
 
 class KnowledgeEngine:
-    """优化版知识引擎：支持静默加载与可靠去重"""
+    """优化版知识引擎：支持静默加载与可靠去重
+
+    SentenceTransformer 模型延迟加载 — 仅在首次 query() 调用时初始化，
+    避免启动时一次性加载所有重型库（PyTorch + transformers + model）。
+    """
 
     def __init__(self, db_path: str = "agent_brain/memory_vdb"):
         self.db_path = db_path
         self.manifest_path = Path(db_path) / "ingested_manifest.json"
+        self._embed_fn: object | None = None
+        self._embed_init_attempted: bool = False
 
-        # 1. 尝试初始化 Embedding 模型
-        try:
-            self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-        except Exception as e:
-            logger.error(f"Embedding 模型加载失败 (离线模式需确保已下载过模型): {e}")
-            # 自动降级：如果没有网络且没模型，可能会报错，建议用户先联网运行一次
-            self.embed_fn = None
-
-        # 2. 初始化 ChromaDB
+        # ChromaDB client — lightweight, no model needed yet
         self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(name="ace_knowledge", embedding_function=self.embed_fn)
+        # Use a placeholder collection initially; real one with embeddings is
+        # created lazily in _ensure_embed_fn()
+        self.collection: object | None = None
+        self._collection_ready: bool = False
 
-        # 3. 加载已处理文件清单 (比从数据库查询快且准)
+        # Load ingested files manifest (lightweight JSON read)
         self.ingested_files = self._load_manifest()
 
+    def _ensure_embed_fn(self) -> bool:
+        """Lazy-init the embedding model and ChromaDB collection.
+
+        Called on first query() or ingest_docs(). Returns True if ready.
+        """
+        if self._collection_ready:
+            return True
+        if self._embed_init_attempted:
+            return False
+        self._embed_init_attempted = True
+
+        try:
+            self._embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+            self.collection = self.client.get_or_create_collection(
+                name="ace_knowledge", embedding_function=self._embed_fn
+            )
+            self._collection_ready = True
+            return True
+        except Exception as e:
+            logger.error(f"Embedding 模型加载失败: {e}")
+            self._embed_fn = None
+            self._collection_ready = False
+            return False
+
     def ingest_docs(self, docs_dir: str = "docs"):
-        """扫描并入库，只处理新文件"""
+        """扫描并入库，只处理新文件。模型延迟到首次调用时才加载。"""
         docs_path = Path(docs_dir)
         if not docs_path.exists():
             return
@@ -48,6 +75,10 @@ class KnowledgeEngine:
                 new_files.append(file_path)
 
         if not new_files:
+            return
+
+        if not self._ensure_embed_fn():
+            logger.warning("Embedding 模型不可用，跳过文档入库。")
             return
 
         for file_path in new_files:
@@ -65,8 +96,8 @@ class KnowledgeEngine:
         logger.success(f"✅ 知识库更新完成，新增 {len(new_files)} 个文档。")
 
     def query(self, text: str, n_results: int = 3) -> str:
-        """语义检索"""
-        if not self.embed_fn:
+        """语义检索。模型在首次调用时延迟加载。"""
+        if not self._ensure_embed_fn():
             return ""
         try:
             results = self.collection.query(query_texts=[text], n_results=n_results)

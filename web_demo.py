@@ -12,19 +12,19 @@ if __package__ is None or __package__ == "":
 
 os.environ["OMP_NUM_THREADS"] = "1"  # suppress KMeans thread warning
 
-import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402,F401  (kept for possible downstream use)
 import streamlit as st  # noqa: E402
 
-from ACE_Agent.agent_core.supervisor import ACESupervisor
 from ACE_Agent.tools.data_factory import (
+    DATASET_GROUPS,
     DATASET_LABELS,
+    _analyze_uploaded_data,
+    _extract_cnn_features,
     generate_dataset,
     list_demo_datasets,
     load_custom_dataset,
 )
-from ACE_Agent.tools.llm_client import LLMSettings, UniversalLLMClient
 from ACE_Agent.tools.settings_store import DEFAULT_PROVIDERS, SessionManager, SettingsStore
 
 # ---------------------------------------------------------------------------
@@ -33,6 +33,27 @@ from ACE_Agent.tools.settings_store import DEFAULT_PROVIDERS, SessionManager, Se
 _TRACE_PATH = Path(__file__).resolve().parent / "outputs" / "llm_trace.jsonl"
 
 st.set_page_config(page_title="ACE Agent", layout="wide", initial_sidebar_state="expanded")
+
+
+def _compute_cache_version() -> str:
+    """Hash key source files so stale @st.cache_resource entries are invalidated
+    when supervisor, experts, or data factory code changes."""
+    import hashlib
+
+    _project_root = Path(__file__).resolve().parent
+    _hash = hashlib.sha1()
+    for _rel in [
+        "agent_core/supervisor.py",
+        "agent_core/schemas.py",
+        "expert_sub_agents/__init__.py",
+        "expert_sub_agents/base.py",
+        "tools/data_factory.py",
+        "tools/coder_sandbox.py",
+    ]:
+        _fp = _project_root / _rel
+        if _fp.exists():
+            _hash.update(_fp.read_bytes())
+    return _hash.hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +85,7 @@ def _init_cost_state() -> None:
             st.session_state[k] = v
 
 
-def _accumulate_cost(client: UniversalLLMClient) -> None:
+def _accumulate_cost(client) -> None:  # client: UniversalLLMClient
     """Merge a client's per-session cost summary into global session state."""
     s = client.get_cost_summary()
     st.session_state.llm_call_count += s["call_count"]
@@ -79,9 +100,33 @@ def _accumulate_cost(client: UniversalLLMClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource
-def _get_supervisor() -> ACESupervisor:
-    return ACESupervisor()
+# Datasets that are synthetically generated and respect n_samples.
+# Everything else (real benchmarks, image datasets) ships with a fixed cardinality.
+_DYNAMIC_SIZES = frozenset({"blobs", "moons", "s_curve", "smile", "high_dim", "multi_view"})
+
+
+def _is_fixed_size_dataset(ds_name: str) -> bool:
+    """Detect whether a dataset ignores n_samples/noise params.
+
+    Uses a static name check — loading a 60K-image CIFAR-10 variant through
+    ResNet-18 just to answer this boolean costs ~70 s and defeats the cache
+    sharing with ``_cached_preview_data``.
+    """
+    return ds_name not in _DYNAMIC_SIZES
+
+
+def _format_dataset_label(key: str) -> str:
+    """Render a selectbox key as a human-readable label."""
+    if key.startswith("group:"):
+        gk = key.split(":", 1)[1]
+        return DATASET_GROUPS[gk]["label"]
+    return DATASET_LABELS.get(key, key)
+
+
+@st.cache_resource(show_spinner="Initializing ACE Agent engine...")
+def _get_supervisor():
+    from ACE_Agent.agent_core.supervisor import ACESupervisor as _ACE
+    return _ACE()
 
 
 def _init_state() -> None:
@@ -89,16 +134,30 @@ def _init_state() -> None:
     for k, v in {
         "current_session_id": str(uuid.uuid4()),
         "messages": [],
-        "supervisor": _get_supervisor(),
         "settings_store": SettingsStore(),
         "session_manager": SessionManager(),
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
+    # Invalidate stale caches when supervisor code changes (prevents
+    # @st.cache_resource from serving a stale singleton after updates).
+    _version_key = "_ace_supervisor_cache_version"
+    _current_version = _compute_cache_version()
+    if st.session_state.get(_version_key) != _current_version:
+        _get_supervisor.clear()
+        _cached_preview_data.clear()
+        _cached_preview_projection.clear()
+        st.session_state[_version_key] = _current_version
 
+    # Supervisor is lazily created in _handle_prompt() on first use.
+    # This keeps page load fast (~2s UI render instead of ~17s blocking wait).
+
+
+@st.cache_data(ttl=30)
 def _read_trace_stats() -> dict[str, int]:
-    """Read llm_trace.jsonl and compute cumulative stats from disk."""
+    """Read llm_trace.jsonl and compute cumulative stats from disk.
+    Cached with 30s TTL to avoid re-parsing on every rerun."""
     stats = {"calls": 0, "retries": 0, "prompt_tokens": 0, "completion_tokens": 0}
     if not _TRACE_PATH.exists():
         return stats
@@ -126,8 +185,9 @@ def _read_trace_stats() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
+def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
     """Render sidebar; return (primary_settings, fallback_settings)."""
+    from ACE_Agent.tools.llm_client import LLMSettings as _LLMS
     sm = st.session_state.session_manager
     ss = st.session_state.settings_store
 
@@ -299,7 +359,7 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
                 st.rerun()
 
     # Build settings objects
-    primary_settings = LLMSettings(
+    primary_settings = _LLMS(
         provider=active_p,
         base_url=p_cfg["base_url"],
         api_key=api_key,
@@ -310,7 +370,7 @@ def _sidebar_ui() -> tuple[LLMSettings, LLMSettings | None]:
     fallback_settings: LLMSettings | None = None
     if fallback_p != "(disabled)" and fallback_api_key and fallback_model:
         fb_cfg = DEFAULT_PROVIDERS[fallback_p]
-        fallback_settings = LLMSettings(
+        fallback_settings = _LLMS(
             provider=fallback_p,
             base_url=fb_cfg["base_url"],
             api_key=fallback_api_key,
@@ -336,38 +396,123 @@ def main() -> None:
     with st.expander("Data Config", expanded=not st.session_state.messages):
         t1, t2 = st.tabs(["内置数据", "上传数据"])
 
-        # 固定尺寸数据集：不需要 n_samples / noise 滑块
-        FIXED_SIZE_DATASETS = {
-            "iris", "wine", "digits", "mnist", "mnist_full",
-            "fashion_mnist", "news", "mfeat",
-            "pathbased", "square", "spiral_sipu", "half_kernel",
-            "usps", "reuters", "har",
-            "cifar10_raw", "cifar10_gap", "cifar10_resnet",
-            "pendigits", "letter", "coil20",
-        }
+        # ---- resolved values (written to session_state for downstream use) ----
+        resolved_ds_name: str = ""
+        resolved_feature_mode: str = ""
+        resolved_upload_mode: str = ""
 
         with t1:
             c1, c2 = st.columns(2)
-            ds_name = c1.selectbox(
+            ds_key = c1.selectbox(
                 "模板",
                 [d for d in list_demo_datasets() if d != "custom"],
-                format_func=lambda v: DATASET_LABELS[v],
+                format_func=_format_dataset_label,
             )
-            is_fixed = ds_name in FIXED_SIZE_DATASETS
-            if is_fixed:
-                sc = c2.slider("样本量", 180, 2000, 480, 30, disabled=True,
-                               help="此数据集为固定尺寸，不可调整样本量")
+
+            # ---- Mode selector for grouped datasets ---------------------------
+            if ds_key.startswith("group:"):
+                group_key = ds_key.split(":", 1)[1]
+                group = DATASET_GROUPS[group_key]
+                modes = group["modes"]
+                mode_labels = [m["label"] for m in modes]
+                default_idx = next(
+                    (i for i, m in enumerate(modes) if m["recommended"]), 0
+                )
+                chosen_label = c2.radio(
+                    "特征模式",
+                    mode_labels,
+                    index=default_idx,
+                    help="选择数据特征表示方式。推荐项通常聚类效果最好。",
+                )
+                chosen_mode = modes[mode_labels.index(chosen_label)]
+                ds_name = chosen_mode["key"]
+                resolved_feature_mode = chosen_mode.get(
+                    "feature_mode", chosen_mode["key"].rsplit("_", 1)[-1]
+                )
+                c2.caption(chosen_mode["desc"])
             else:
-                sc = c2.slider("样本量", 180, 2000, 480, 30)
+                ds_name = ds_key
+                resolved_feature_mode = ""
+                c2.caption("")  # placeholder
+
+            resolved_ds_name = ds_name
+
+            is_fixed = _is_fixed_size_dataset(ds_name)
+            if is_fixed:
+                sc = 480
+                noise = 0.06
+                seed = 42
+            else:
+                sc = st.slider("样本量", 180, 2000, 480, 30, key="sc_slider")
             c3, c4 = st.columns(2)
             if is_fixed:
-                noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01, disabled=True,
-                                  help="此数据集为固定数据，无噪声参数")
+                c3.caption("(样本量/噪声/种子 由数据集固定)")
             else:
                 noise = c3.slider("噪声", 0.01, 0.18, 0.06, 0.01)
-            seed = c4.number_input("随机种子", 0, 9999, 42)
+                seed = c4.number_input("随机种子", 0, 9999, 42)
+
         with t2:
-            uploaded_file = st.file_uploader("上传 CSV/Excel", type=["csv", "xlsx", "xls"])
+            uploaded_file = st.file_uploader(
+                "上传 CSV/Excel", type=["csv", "xlsx", "xls"]
+            )
+            upload_analysis: dict | None = None
+            if uploaded_file:
+                # Load once for analysis (cached by file content)
+                preview_ds_early = _cached_load_custom(
+                    uploaded_file.getvalue(), uploaded_file.name
+                )
+                if preview_ds_early is not None:
+                    nf = preview_ds_early.X.shape[1]
+                    ns = preview_ds_early.X.shape[0]
+                    upload_analysis = _analyze_uploaded_data(
+                        preview_ds_early.X, nf, ns
+                    )
+                    detected_type = upload_analysis.get("detected_type", "tabular")
+                    recs = upload_analysis.get("recommendations", [])
+
+                    if recs:
+                        # Show recommendations as a small card
+                        if detected_type == "image":
+                            img_s = upload_analysis.get("image_shape")
+                            size_str = (
+                                f"{img_s[0]}×{img_s[1]}×{img_s[2]}"
+                                if img_s
+                                else "unknown"
+                            )
+                            st.info(
+                                f"🔍 检测到图像数据: **{size_str}**，{nf} 维 → {ns} 样本\n\n"
+                                f"原始像素空间欧氏聚类在 ≥10D 时失效，建议提取 CNN 语义特征。"
+                            )
+                        elif nf > 500:
+                            st.warning(
+                                f"🔍 检测到高维数据: **{nf} 维**，{ns} 样本\n\n"
+                                f"距离矩阵计算将极慢，建议降维后再聚类。"
+                            )
+
+                        rec_labels = [r["label"] for r in recs]
+                        rec_default = next(
+                            (i for i, r in enumerate(recs)
+                             if r.get("priority") in ("strongly_recommended", "recommended")),
+                            0,
+                        )
+                        chosen_rec = st.radio(
+                            "处理方式",
+                            rec_labels,
+                            index=rec_default,
+                            key="upload_mode_radio",
+                        )
+                        chosen_idx = rec_labels.index(chosen_rec)
+                        resolved_upload_mode = recs[chosen_idx]["mode"]
+
+                        # Show reason for the chosen option
+                        st.caption(recs[chosen_idx]["reason"])
+                    else:
+                        resolved_upload_mode = "as_is"
+
+        # ---- Store resolved values for _handle_prompt -------------------------
+        st.session_state["_resolved_ds_name"] = resolved_ds_name
+        st.session_state["_resolved_feature_mode"] = resolved_feature_mode
+        st.session_state["_upload_feature_mode"] = resolved_upload_mode
 
         if st.button("Preview Data Distribution", use_container_width=True) or uploaded_file:
             st.divider()
@@ -379,39 +524,73 @@ def main() -> None:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
                         tmp.write(uploaded_file.getvalue())
                         tmp_path = tmp.name
-                    preview_ds = load_custom_dataset(tmp_path)
-                    os.remove(tmp_path)
+                    preview_ds = _cached_load_custom(uploaded_file.getvalue(), uploaded_file.name)
+                    os.remove(tmp_path) if os.path.exists(tmp_path) else None
+                    # Auto-detect image shape from feature dimensions
+                    if preview_ds:
+                        from ACE_Agent.tools.data_factory import _decompose_image_shape as _dis
+                        nf = preview_ds.X.shape[1]
+                        img_shape = _dis(nf)
+                        if img_shape:
+                            meta = dict(preview_ds.metadata or {})
+                            meta["is_image"] = True
+                            meta["original_shape"] = img_shape
+                            preview_ds.metadata = meta
                 else:
-                    preview_ds = generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
+                    preview_ds = _cached_preview_data(ds_name, sc, noise, seed)
 
                 if preview_ds:
                     st.subheader(f"数据预览: {preview_ds.display_name}")
+                    # Compute preview projection (cached)
+                    X_plot, n_dims, n_samples = _cached_preview_projection(
+                        ds_name if not uploaded_file else uploaded_file.name,
+                        sc if not uploaded_file else 0,
+                        noise if not uploaded_file else 0.0,
+                        seed,
+                        bool(uploaded_file),
+                        uploaded_file.getvalue() if uploaded_file else b'',
+                        uploaded_file.name if uploaded_file else '',
+                    )
                     pc1, pc2 = st.columns([0.7, 0.3])
                     with pc1:
-                        import platform
-
-                        if platform.system() == "Windows":
-                            plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
-                        plt.rcParams["axes.unicode_minus"] = False
+                        _setup_matplotlib_fonts()
+                        import matplotlib.pyplot as plt
                         fig, ax = plt.subplots(figsize=(8, 4.5))
-                        ax.scatter(
-                            preview_ds.X[:, 0],
-                            preview_ds.X[:, 1],
-                            c="black",
-                            s=10,
-                            alpha=0.5,
-                            edgecolors="none",
-                        )
-                        ax.set_title("原始特征空间分布 (特征1 vs 特征2)", fontsize=10)
-                        ax.set_xlabel("Feature 1")
-                        ax.set_ylabel("Feature 2")
+                        if n_dims >= 2:
+                            if n_dims > 2:
+                                title = "PCA投影 (前2主成分)"
+                            else:
+                                title = "原始特征空间分布 (特征1 vs 特征2)"
+                            ax.scatter(
+                                X_plot[:, 0],
+                                X_plot[:, 1],
+                                c="black",
+                                s=10,
+                                alpha=0.5,
+                                edgecolors="none",
+                            )
+                        else:
+                            ax.scatter(
+                                X_plot[:, 0] if n_dims == 1 else X_plot[:, 0],
+                                np.zeros_like(X_plot[:, 0]) if n_dims == 1 else np.zeros_like(X_plot[:, 0]),
+                                c="black",
+                                s=10,
+                                alpha=0.5,
+                                edgecolors="none",
+                            )
+                            title = "1D 特征分布"
+                        ax.set_title(title, fontsize=10)
+                        ax.set_xlabel("Component 1")
+                        ax.set_ylabel("Component 2")
                         ax.grid(True, linestyle=":", alpha=0.6)
                         st.pyplot(fig)
                         plt.close(fig)
                     with pc2:
                         st.write("**数据统计**")
-                        st.metric("样本总数", preview_ds.X.shape[0])
-                        st.metric("特征维度", preview_ds.X.shape[1])
+                        st.metric("样本总数", n_samples)
+                        st.metric("特征维度", n_dims)
+                        if n_dims > 2:
+                            st.caption("(使用PCA降至2D可视化)")
                         st.info("提示：请在下方输入指令来启动智能体聚类任务。")
 
     _render_messages()
@@ -444,7 +623,7 @@ def _render_messages() -> None:
                 _render_report(m["report"])
 
 
-@st.cache_data
+@st.cache_data(max_entries=5)
 def _cached_load_custom(file_bytes: bytes, file_name: str):  # type: ignore[return]
     import tempfile
 
@@ -461,18 +640,71 @@ def _cached_load_custom(file_bytes: bytes, file_name: str):  # type: ignore[retu
             os.remove(tmp_path)
 
 
+@st.cache_resource
+def _setup_matplotlib_fonts() -> None:
+    """Cache matplotlib Chinese font setup; avoids scanning system fonts on every plot."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans", "Arial"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+@st.cache_data(max_entries=5)
+def _cached_preview_data(ds_name: str, sc: int, noise: float, seed: int):
+    """Cache dataset generation for preview; avoid re-generating on every rerun."""
+    return generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
+
+
+@st.cache_data(max_entries=5)
+def _cached_preview_projection(
+    ds_name: str, sc: int, noise: float, seed: int,
+    is_upload: bool, file_bytes: bytes, file_name: str,
+):
+    """Cache PCA/feature projection for preview visualization."""
+    if is_upload:
+        ds = _cached_load_custom(file_bytes, file_name)
+    else:
+        ds = _cached_preview_data(ds_name, sc, noise, seed)
+
+    X = ds.X
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    if hasattr(X, "values"):
+        X = X.values
+    X_np = np.array(X, dtype=np.float64)
+    n_samples, n_dims = X_np.shape
+
+    if n_dims > 2:
+        from sklearn.decomposition import PCA
+        X_plot = PCA(n_components=2, random_state=seed).fit_transform(X_np)
+    else:
+        X_plot = X_np
+
+    return X_plot, n_dims, n_samples
+
+
 def _handle_prompt(
     prompt: str,
     ds_name: str,
     sc: int,
     noise: float,
     seed: int,
-    settings: LLMSettings,
-    fallback_settings: LLMSettings | None,
+    settings,  # LLMSettings
+    fallback_settings,  # LLMSettings | None
     uploaded_file,  # type: ignore[type-arg]
 ) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
+    # Lazy init: only create the heavy supervisor when user first runs a task
+    if "supervisor" not in st.session_state:
+        st.session_state["supervisor"] = _get_supervisor()
     supervisor = st.session_state.supervisor
+
+    # Fresh session detection: if this is the first user message (only the
+    # one we just appended), clear any leftover memory from a previous
+    # conversation in the cached supervisor singleton.
+    if len(st.session_state.messages) == 1:
+        supervisor.reset_state()
 
     with st.chat_message("assistant"):
         progress_placeholder = st.empty()
@@ -491,8 +723,12 @@ def _handle_prompt(
             st.write("正在通过 MasterRouter 进行语义识别...")
 
             # Build router client with fallback support
-            router_client = UniversalLLMClient(settings, fallback_settings, caller="router")
-            intent = supervisor.router.analyze_intent(prompt, supervisor.memory, settings)
+            from ACE_Agent.tools.llm_client import UniversalLLMClient as _LLMC
+            router_client = _LLMC(settings, fallback_settings, caller="router")
+            ds_label = _format_dataset_label(ds_name) if ds_name else ""
+            intent = supervisor.router.analyze_intent(
+                prompt, supervisor.memory, settings, dataset_context=ds_label,
+            )
             st.write(f"意图判定: **{intent.get('intent')}** ({intent.get('reasoning')})")
             _accumulate_cost(router_client)
 
@@ -501,8 +737,44 @@ def _handle_prompt(
                 st.write("正在画像并准备数据集...")
                 if uploaded_file:
                     dataset = _cached_load_custom(uploaded_file.getvalue(), uploaded_file.name)
+                    upload_mode = st.session_state.get("_upload_feature_mode", "")
+                    if dataset and upload_mode == "cnn_features":
+                        try:
+                            st.write("正在提取 CNN 特征 (ResNet-18)...")
+                            orig_shape = None
+                            nf = dataset.X.shape[1]
+                            from ACE_Agent.tools.data_factory import _decompose_image_shape
+                            shape = _decompose_image_shape(nf)
+                            if shape:
+                                orig_shape = shape
+                            feats = _extract_cnn_features(dataset.X, orig_shape)
+                            from ACE_Agent.agent_core.schemas import DatasetBundle as _DS
+                            dataset = _DS(
+                                name=dataset.name,
+                                display_name=f"{dataset.display_name} (CNN特征)",
+                                X=feats,
+                                y=dataset.y,
+                                description=f"上传图像数据，经 ResNet-18 提取 512D 语义特征。原始: {nf}D。",
+                                shape_family="manifold",
+                                feature_names=[f"cnn_{i}" for i in range(feats.shape[1])],
+                                feature_mode="cnn_features",
+                                metadata={
+                                    **(dataset.metadata or {}),
+                                    "is_image": True,
+                                    "original_shape": orig_shape,
+                                    "feature_mode": "cnn_features",
+                                    "expected_clusters": (
+                                        int(np.unique(dataset.y).size)
+                                        if dataset.y is not None and len(np.unique(dataset.y)) >= 2
+                                        else 3
+                                    ),
+                                },
+                            )
+                            st.write(f"特征提取完成: {nf}D → {feats.shape[1]}D")
+                        except Exception as _cnn_exc:
+                            st.warning(f"CNN 特征提取失败 ({_cnn_exc})，回退到原始像素。")
                 else:
-                    dataset = generate_dataset(ds_name, n_samples=sc, noise=noise, random_state=seed)
+                    dataset = _cached_preview_data(ds_name, sc, noise, seed)
 
             n_experts = len(supervisor._DEFAULT_ACTIVE_EXPERTS)
             if dataset and dataset.X.shape[1] > 2:
@@ -536,12 +808,16 @@ def _handle_prompt(
             _render_report(report)
             _render_hitl_panel(report, supervisor, dataset, prompt, settings)
 
+    # Strip heavy data from report for session state storage
+    # Use SessionManager's helper to keep memory footprint low
+    clean_report = st.session_state.session_manager._strip_heavy_data(report)
+
     st.session_state.messages.append(
         {
             "role": "assistant",
             "content": report.llm_summary or report.executive_summary,
             "thought": thought,
-            "report": report if report.response_type == "CLUSTER_TASK" else None,
+            "report": clean_report if report.response_type == "CLUSTER_TASK" else None,
         }
     )
     st.session_state.session_manager.save_session(
@@ -599,6 +875,8 @@ def _render_audit_card(audit: dict) -> None:  # type: ignore[type-arg]
 
 def _render_ensemble_metrics(top) -> None:
     """Render ensemble-specific metrics and co-association heatmap."""
+    import matplotlib.pyplot as plt
+    import numpy as np
     params = top.params if hasattr(top, "params") else top.get("params", {})
     coassoc = params.get("coassoc_matrix") if isinstance(params, dict) else None
     if coassoc is None:
@@ -664,15 +942,41 @@ def _render_ensemble_metrics(top) -> None:
 
 def _render_report(r) -> None:  # type: ignore[type-arg]
     ranking = r.ranking if hasattr(r, "ranking") else r["ranking"]
+    if not ranking:
+        # Cached report or error report — no per-algorithm ranking to render
+        return
     dataset = r.dataset if hasattr(r, "dataset") else r["dataset"]
     top = ranking[0]
     ds_name_display = dataset.display_name if hasattr(dataset, "display_name") else dataset["display_name"]
     st.subheader(f"分析报告: {ds_name_display}")
-    c = st.columns(4)
+
+    # ---- Phase 6: Find best ARI across all ranking entries ----
+    best_ari = -1.0
+    for item in ranking:
+        m = item.metrics if hasattr(item, "metrics") else item.get("metrics", {})
+        ari_val = m.get("ari", -1.0)
+        if ari_val is not None and ari_val > best_ari:
+            best_ari = ari_val
+
     algo_name = top.algorithm_name if hasattr(top, "algorithm_name") else top["algorithm_name"]
-    score = float(top.metrics["score"] if hasattr(top, "metrics") else top["metrics"]["score"])
-    c[0].metric("优胜算法", algo_name)
-    c[2].metric("评分", f"{score:.3f}")
+    top_metrics = top.metrics if hasattr(top, "metrics") else top.get("metrics", {})
+    score = float(top_metrics["score"] if isinstance(top_metrics, dict) else top_metrics["score"])
+
+    c = st.columns(4)
+    if best_ari >= 0 and best_ari < 0.2:
+        c[0].metric("优胜算法", "None / Attempting Rescue")
+        st.error(
+            f"### ⛔ NO VALID CLUSTERS — 聚类失败\n\n"
+            f"数据最强 ARI 仅 **{best_ari:.4f}** (< 0.2)，"
+            f"所有算法结果接近随机分配。欧氏空间方法无法捕捉数据内在结构。\n"
+            f"系统已自动触发深度管线（流形嵌入 + 自编码器）进行救助。"
+        )
+    else:
+        c[0].metric("优胜算法", algo_name)
+    best_nmi = float(top_metrics.get("nmi", 0.0))
+    c[1].metric("ARI", f"{best_ari:.3f}" if best_ari >= 0 else "N/A")
+    c[2].metric("NMI", f"{best_nmi:.3f}")
+    c[3].metric("评分", f"{score:.3f}")
 
     # ---- Per-Algorithm Ranking Table ----
     if len(ranking) > 1:
@@ -683,10 +987,14 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
             expert = item.expert_label if hasattr(item, "expert_label") else item["expert_label"]
             m = item.metrics if hasattr(item, "metrics") else item["metrics"]
             s = float(m.get("score", 0))
+            ari_v = m.get("ari", -1.0)
+            nmi_v = m.get("nmi", 0.0)
             rows.append({
                 "排名": i + 1,
                 "算法": algo,
                 "专家来源": expert,
+                "ARI": f"{float(ari_v):.4f}" if ari_v is not None and ari_v >= 0 else "N/A",
+                "NMI": f"{float(nmi_v):.4f}" if nmi_v is not None else "N/A",
                 "评分": f"{s:.4f}",
             })
         st.dataframe(
@@ -707,7 +1015,6 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
 
     # ---- Phase 3: Graph-based visualizations ----
     top_params = top.params if hasattr(top, "params") else top.get("params", {})
-    top_metrics = top.metrics if hasattr(top, "metrics") else top.get("metrics", {})
 
     # Graph disagreement heatmap (when high disagreement exists)
     if top_metrics.get("high_disagreement_ratio", 0) > 0.1:
