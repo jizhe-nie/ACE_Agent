@@ -21,6 +21,35 @@ from sklearn.datasets import (
 
 from ACE_Agent.agent_core.schemas import DatasetBundle
 
+# ---------------------------------------------------------------------------
+# Local cache for remote datasets — avoids repeated HTTP fetches from OpenML
+# ---------------------------------------------------------------------------
+_CACHE_DIR = os.path.join("data", "cache")
+
+
+def _openml_cache(name: str, version: int = 1, *, cache_key: str | None = None):
+    """Fetch from OpenML with local ``.npz`` cache.
+
+    Returns ``(X, y)`` as numpy arrays.  On first call, downloads from
+    OpenML and persists to *data/cache/<cache_key>.npz*; subsequent calls
+    load directly from disk.
+    """
+    cache_key = cache_key or name
+    cache_path = os.path.join(_CACHE_DIR, f"{cache_key}.npz")
+    if os.path.exists(cache_path):
+        logger.info("从本地缓存加载 %s (%s)", name, cache_path)
+        cached = np.load(cache_path, allow_pickle=True)
+        return cached["X"], cached["y"]
+    logger.info("从 OpenML 下载 %s (首次，将缓存到 %s)", name, cache_path)
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    data = fetch_openml(name, version=version, parser="auto")
+    X = np.asarray(data.data, dtype=float)
+    y = np.asarray(data.target)
+    np.savez_compressed(cache_path, X=X, y=y)
+    logger.info("已缓存 %s → %s  (%d x %d)", name, cache_path, X.shape[0], X.shape[1])
+    return X, y
+
+
 DATASET_LABELS = {
     "blobs": "团状数据集",
     "moons": "月牙数据集",
@@ -537,9 +566,8 @@ def generate_dataset(
 
     # 3. 深度聚类/高维数据集
     if dataset_name == "mnist":
-        logger.info("正在从 OpenML 下载 MNIST 数据集 (可能耗时)...")
-        mnist = fetch_openml("mnist_784", version=1, parser="auto")
-        X, y = mnist.data.values[:2000], mnist.target.values[:2000].astype(int)
+        X, y_raw = _openml_cache("mnist_784", version=1, cache_key="mnist")
+        X, y = X[:2000], y_raw[:2000].astype(int)
         return DatasetBundle(
             name="mnist",
             display_name=DATASET_LABELS["mnist"],
@@ -869,10 +897,8 @@ def _make_half_kernel_dataset(
 
 def _load_usps() -> DatasetBundle:
     """USPS handwritten digits. 256 features, 9298 samples, 10 classes."""
-    logger.info("正在从 OpenML 加载 USPS 数据集...")
-    data = fetch_openml("usps", version=1, parser="auto")
-    X = np.asarray(data.data, dtype=float)
-    y = np.asarray(data.target, dtype=int)
+    X, y_raw = _openml_cache("usps", version=1, cache_key="usps")
+    y = np.asarray(y_raw, dtype=int)
     return DatasetBundle(
         name="usps",
         display_name=DATASET_LABELS["usps"],
@@ -914,20 +940,35 @@ def _load_reuters() -> DatasetBundle:
             {"name": "reuters-21578", "version": 1},
             {"data_id": 433},
         ]
-        data = None
-        for attempt in openml_attempts:
-            try:
-                data = fetch_openml(parser="auto", **attempt)
-                break
-            except Exception:
-                continue
-        if data is not None:
-            X_raw = data.data
-            y_raw = data.target
-            if hasattr(X_raw, "toarray"):
-                X_raw = X_raw.toarray()
-            X = np.asarray(X_raw, dtype=float)
-            y = np.asarray(pd.factorize(y_raw)[0], dtype=int)
+        # Try local cache first (from prior successful OpenML download)
+        _reuters_cache = os.path.join(_CACHE_DIR, "reuters.npz")
+        if os.path.exists(_reuters_cache):
+            logger.info("从本地缓存加载 reuters (%s)", _reuters_cache)
+            _c = np.load(_reuters_cache, allow_pickle=True)
+            X = _c["X"]
+            y = _c["y"]
+        else:
+            data = None
+            for attempt in openml_attempts:
+                try:
+                    data = fetch_openml(parser="auto", **attempt)
+                    break
+                except Exception:
+                    continue
+            if data is not None:
+                X_raw = data.data
+                y_raw = data.target
+                if hasattr(X_raw, "toarray"):
+                    X_raw = X_raw.toarray()
+                X = np.asarray(X_raw, dtype=float)
+                y = np.asarray(pd.factorize(y_raw)[0], dtype=int)
+                os.makedirs(_CACHE_DIR, exist_ok=True)
+                np.savez_compressed(_reuters_cache, X=X, y=y)
+                logger.info("已缓存 reuters → %s", _reuters_cache)
+            else:
+                X = None
+                y = None
+        if X is not None and y is not None:
             return DatasetBundle(
                 name="reuters",
                 display_name=DATASET_LABELS["reuters"],
@@ -976,10 +1017,8 @@ def _load_reuters() -> DatasetBundle:
 
 def _load_har() -> DatasetBundle:
     """Human Activity Recognition. 561 features, 10299 samples, 6 classes."""
-    logger.info("正在从 OpenML 加载 HAR 数据集...")
-    data = fetch_openml("har", version=1, parser="auto")
-    X = np.asarray(data.data, dtype=float)
-    y = pd.factorize(data.target)[0]
+    X, y_raw = _openml_cache("har", version=1, cache_key="har")
+    y = pd.factorize(y_raw)[0]
     return DatasetBundle(
         name="har",
         display_name=DATASET_LABELS["har"],
@@ -1090,10 +1129,8 @@ def _load_cifar10(feature_mode: str = "raw") -> DatasetBundle:
 
 def _load_pendigits() -> DatasetBundle:
     """Pendigits pen-based handwritten digits. 16 features, 10992 samples, 10 classes."""
-    logger.info("正在从 OpenML 加载 Pendigits 数据集...")
-    data = fetch_openml("pendigits", version=1, parser="auto")
-    X = np.asarray(data.data, dtype=float)
-    y = pd.factorize(data.target)[0]
+    X, y_raw = _openml_cache("pendigits", version=1, cache_key="pendigits")
+    y = pd.factorize(y_raw)[0]
     return DatasetBundle(
         name="pendigits",
         display_name=DATASET_LABELS["pendigits"],
@@ -1108,10 +1145,8 @@ def _load_pendigits() -> DatasetBundle:
 
 def _load_letter() -> DatasetBundle:
     """Letter Recognition. 16 features, 20000 samples, 26 classes."""
-    logger.info("正在从 OpenML 加载 Letter Recognition 数据集...")
-    data = fetch_openml("letter", version=1, parser="auto")
-    X = np.asarray(data.data, dtype=float)
-    y = pd.factorize(data.target)[0]
+    X, y_raw = _openml_cache("letter", version=1, cache_key="letter")
+    y = pd.factorize(y_raw)[0]
     return DatasetBundle(
         name="letter",
         display_name=DATASET_LABELS["letter"],
@@ -1126,17 +1161,11 @@ def _load_letter() -> DatasetBundle:
 
 def _load_coil20() -> DatasetBundle:
     """COIL-20 object recognition. ~1024 features (HOG/pixel), 1440 samples, 20 classes."""
-    logger.info("正在从 OpenML 加载 COIL-20 数据集...")
     try:
-        data = fetch_openml("coil20", version=1, parser="auto")
+        X, y_raw = _openml_cache("coil20", version=1, cache_key="coil20")
     except Exception:
-        # Fallback: use sklearn's fetch_openml with cpu-friendly settings
-        data = fetch_openml("COIL-20", version=1, parser="auto")
-    X = data.data
-    if hasattr(X, "toarray"):
-        X = X.toarray()
-    X = np.asarray(X, dtype=float)
-    y = pd.factorize(data.target)[0]
+        X, y_raw = _openml_cache("COIL-20", version=1, cache_key="coil20")
+    y = pd.factorize(y_raw)[0]
     return DatasetBundle(
         name="coil20",
         display_name=DATASET_LABELS["coil20"],
