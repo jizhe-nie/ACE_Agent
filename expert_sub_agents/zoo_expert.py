@@ -69,6 +69,10 @@ class ZooExpert(BaseExpert):
           禁止用其他变量名替代 artifacts。
         """
         algos = AlgorithmZoo.get_all_algorithms()
+        # Critic 2.0: enforce blocked_algorithms constraint at code-gen level
+        if constraints and constraints.get("blocked_algorithms"):
+            _blocked = set(constraints["blocked_algorithms"])
+            algos = [a for a in algos if a["name"] not in _blocked]
         expected_clusters = dataset.metadata.get("expected_clusters", 3)
         n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
 

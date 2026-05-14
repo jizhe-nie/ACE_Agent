@@ -133,6 +133,46 @@ class EnsembleConsensusExpert(BaseExpert):
                                 n_samples, len(lbls))
                 return None
 
+        # ---- Quality gate: filter degenerate clusterings before voting ----
+        # Reject: single-cluster (k<2), over-fragmented (k >= 20% n_samples),
+        # all-noise (all -1), or zero-quality (score <= 0.0).
+        _max_k = max(int(n_samples * 0.2), 2)
+        _filtered: list[tuple[list[int], float, str]] = []
+        for lbls, score, algo in entries:
+            unique_lbls = set(lbls)
+            k = len(unique_lbls)
+            if k < 2:
+                _logger.info("Ensemble: rejected '%s' — trivial k=%d (single cluster).", algo, k)
+                continue
+            if k > _max_k:
+                _logger.info("Ensemble: rejected '%s' — k=%d exceeds %.0f%% of n_samples.",
+                             algo, k, 20.0)
+                continue
+            if unique_lbls == {-1}:
+                _logger.info("Ensemble: rejected '%s' — all-noise labeling.", algo)
+                continue
+            if score <= 0.0:
+                _logger.info("Ensemble: rejected '%s' — score=%.3f <= 0.", algo, score)
+                continue
+            _filtered.append((lbls, score, algo))
+
+        _rejected = len(entries) - len(_filtered)
+        if _rejected > 0:
+            _logger.info(
+                "Ensemble: quality gate rejected %d degenerate entries. "
+                "%d valid entries remain.",
+                _rejected, len(_filtered),
+            )
+
+        if len(_filtered) < 2:
+            _logger.warning(
+                "Ensemble: after quality gate only %d valid entries (< 2) — skipped.",
+                len(_filtered),
+            )
+            return None
+
+        entries = _filtered
+
         # ---- Determine k (majority vote among experts) -------------------
         k_counts: dict[int, int] = {}
         for lbls, _, _ in entries:

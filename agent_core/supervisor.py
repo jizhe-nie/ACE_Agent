@@ -845,8 +845,21 @@ class ACESupervisor:
         )
         if retry_results:
             all_results.extend(retry_results)
-            ranking = self._compute_informed_ranking(all_results, working_dataset, trace,
-                                                     centroid_ban=_conn_check["centroid_ban"])
+            # ---- Critic 2.0: enforce blocked_algorithms at collection level ----
+            _blocked = list(audit_report.get("retry_constraints", {}).get("blocked_algorithms", []) or [])
+            if _blocked:
+                _before_count = len(all_results)
+                all_results = [r for r in all_results if r.algorithm_name not in set(_blocked)]
+                _removed = _before_count - len(all_results)
+                if _removed > 0:
+                    trace.append(
+                        f"【Critic 2.0】已从结果池移除 {_removed} 个被封锁算法: {_blocked}"
+                    )
+            ranking = self._compute_informed_ranking(
+                all_results, working_dataset, trace,
+                centroid_ban=_conn_check["centroid_ban"],
+                blocked_algorithms=_blocked if _blocked else None,
+            )
             best = ranking[0]
             trace.append("【Critic 2.0】约束重试完成，已重新排名。")
             _progress("正在重新审计约束重试结果...")
@@ -1107,20 +1120,29 @@ class ACESupervisor:
             return None
 
         fast_audit = bool(getattr(settings, "fast_audit", False))
-        mode_label = "快速审计" if fast_audit else "完整审计"
-        trace.append(
-            f"【审计】对最优结果 '{winner.algorithm_name}' 启动 {mode_label}..."
-        )
 
         # ---- Phase 5.4: adaptive timeout + memory for audit sandbox -----------
         _n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
         _n_samples = dataset.X.shape[0]
+
+        # Auto fast-track for high-dim data to avoid guaranteed sandbox timeout
+        if _n_features > 500 and not fast_audit:
+            fast_audit = True
+            trace.append(
+                f"【审计】{_n_features}D 高维数据自动切换快速审计模式"
+                f"（跳过全量审计以避免沙箱超时坍缩）。"
+            )
+
+        mode_label = "快速审计" if fast_audit else "完整审计"
+        trace.append(
+            f"【审计】对最优结果 '{winner.algorithm_name}' 启动 {mode_label}..."
+        )
         # Scale timeout with data dimensionality: base 45s, +5s per 100D
         _audit_timeout_sec = 45 + max(0, (_n_features - 100) // 100 * 5)
         # For large samples with high dim, add extra budget
         if _n_samples > 5000 and _n_features > 200:
             _audit_timeout_sec += 15
-        _audit_timeout_sec = min(_audit_timeout_sec, 120)  # cap at 120s
+        _audit_timeout_sec = min(_audit_timeout_sec, 240 if _n_features > 500 else 120)
         # Directly set sandbox attributes — env vars are read once at construction
         _prev_sandbox_timeout = critic.sandbox.timeout_sec
         _prev_sandbox_memory = critic.sandbox.memory_mb
@@ -1231,9 +1253,45 @@ class ACESupervisor:
                     pass
 
                 if not _retry_succeeded:
+                    # ---- Phase 6: auto-relaxed tier — last resort before hard fallback ----
+                    _relaxed_timeout = max(_audit_timeout_sec * 2, 90)
+                    trace.append(
+                        "【审计】fast_audit 重试失败，触发自适应宽松模式："
+                        f"超时 {_audit_timeout_sec}s → {_relaxed_timeout}s，"
+                        "最大采样 500 样本。"
+                    )
+                    try:
+                        critic.sandbox.timeout_sec = _relaxed_timeout
+                        _relaxed_settings = _fast_settings
+                        if hasattr(_fast_settings, "model_copy"):
+                            _relaxed_settings = _fast_settings.model_copy(
+                                update={"fast_audit": True, "audit_relaxed": True}
+                            )
+                        else:
+                            from dataclasses import replace
+                            _relaxed_settings = replace(
+                                _fast_settings, fast_audit=True, audit_relaxed=True
+                            )
+                        _relaxed_audit = critic.execute_audit(
+                            winner, dataset, _relaxed_settings,
+                        )
+                        if _relaxed_audit and not _relaxed_audit.get("degraded"):
+                            _relaxed_audit["fast_audit_retry"] = True
+                            _relaxed_audit["audit_relaxed"] = True
+                            audit = _relaxed_audit
+                            _retry_succeeded = True
+                            trace.append(
+                                f"【审计】自适应宽松重试成功 — "
+                                f"裁决: {audit.get('endorsement', '?')},"
+                                f" 置信度: {audit.get('confidence_level', '?')}"
+                            )
+                    except Exception as _relaxed_exc:
+                        trace.append(f"【审计】自适应宽松重试异常 ({_relaxed_exc})。")
+
+                if not _retry_succeeded:
                     critic_diag = "; ".join(critic.last_logs[-2:]) if critic.last_logs else "（无诊断信息）"
                     trace.append(
-                        f"【审计】fast_audit 重试仍失败，降级为初级审计建议。"
+                        f"【审计】自适应宽松重试仍失败，降级为初级审计建议。"
                         f"{critic_diag}"
                     )
                     audit = {
@@ -1244,6 +1302,30 @@ class ACESupervisor:
                         "recommendation": "审计沙箱超时（timeout=" + str(_audit_timeout_sec) + "s），请考虑启用 fast_audit 模式或减小数据集。",
                         "degraded": True,
                     }
+
+            # ---- Fallback confidence from winner's clustering metrics ----
+            # When audit sandbox times out, confidence_level may be 0 (sentinel).
+            # Use the winner's actual metrics (ARI, Silhouette, NMI) as a
+            # rough confidence estimate, capped at 0.7 to reflect missing audit.
+            if audit:
+                _conf = audit.get("confidence_level")
+                if _conf is None or float(_conf) <= 0.0:
+                    _wm = getattr(winner, "metrics", {}) or {}
+                    _fallback_scores = []
+                    for _key in ("ari", "silhouette", "nmi"):
+                        _v = _wm.get(_key)
+                        if _v is not None:
+                            try:
+                                _fv = float(_v)
+                                if _fv > 0:
+                                    _fallback_scores.append(_fv)
+                            except (ValueError, TypeError):
+                                pass
+                    if _fallback_scores:
+                        _fallback_conf = round(min(max(_fallback_scores), 0.7), 3)
+                        audit["confidence_level"] = _fallback_conf
+                        audit["confidence_fallback"] = True
+
             return audit
         except Exception as exc:
             trace.append(f"【审计】Critic 审计过程异常: {exc}")
@@ -2106,6 +2188,7 @@ class ACESupervisor:
         dataset: DatasetBundle,
         trace: list[str],
         centroid_ban: set[str] | None = None,
+        blocked_algorithms: list[str] | None = None,
     ) -> list[AlgorithmRunResult]:
         """Rank results.  When ground-truth labels exist, **ARI is the sole
         ranking criterion** — internal metrics (Silhouette, Edge Cut,
@@ -2188,6 +2271,10 @@ class ACESupervisor:
 
             # ---- connectivity pre-check centroid veto --------------------
             if centroid_ban and r.algorithm_name in centroid_ban:
+                ari = 0.0
+
+            # ---- Critic 2.0 blocked algorithm veto -----------------------
+            if blocked_algorithms and r.algorithm_name in blocked_algorithms:
                 ari = 0.0
 
             entries.append((ari, nmi, internal_raw, r))
