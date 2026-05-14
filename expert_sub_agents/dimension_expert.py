@@ -42,6 +42,42 @@ _SKELETON = r"""# ===== ACE Dimension Expert Skeleton (Phase 3) =====
 # Data lives in CTX_DATA (read-only); results go into artifacts (write-only).
 
 import numpy as _np
+import os as _os
+
+# ---- matplotlib (for cluster plots) ------------------------------------
+_has_mpl = False
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    _has_mpl = True
+except Exception:
+    pass
+
+# ---- plot helper -------------------------------------------------------
+def _plot_dim_result(X_2d, labels, title, out_path):
+    # Plot 2-D clustering result; slices first 2 components if X_2d has >2.
+    if not _has_mpl:
+        return out_path
+    try:
+        _Xp = X_2d[:, :2] if X_2d.ndim == 2 and X_2d.shape[1] > 2 else X_2d
+        if _Xp.ndim != 2 or _Xp.shape[1] < 2:
+            return out_path
+        _fig, _ax = _plt.subplots(figsize=(6, 4))
+        _unique = _np.unique(labels)
+        for _lb in _unique:
+            _mask = labels == _lb
+            _ax.scatter(_Xp[_mask, 0], _Xp[_mask, 1], label=f"Cluster {_lb}", s=8, alpha=0.6)
+        _ax.set_title(title)
+        _ax.legend(loc="best", fontsize=6)
+        _os.makedirs(_os.path.dirname(out_path) if _os.path.dirname(out_path) else ".", exist_ok=True)
+        _fig.savefig(out_path, dpi=80, bbox_inches="tight")
+        _plt.close(_fig)
+        return out_path
+    except Exception:
+        return out_path
+
+_output_base = "outputs/dimension"
 
 # ---- scale -------------------------------------------------------------
 _scaler = {SCALER_CLASS}()
@@ -65,6 +101,7 @@ if _d1.get("active", True):
         _lbl1 = KMeans(n_clusters=min(_k1, _n - 1), random_state=42, n_init=10).fit_predict(_red1)
         _sil1 = float(silhouette_score(_red1, _lbl1))
         _chi1 = float(calinski_harabasz_score(_red1, _lbl1))
+        _plot1 = _plot_dim_result(_red1, _lbl1, "PCA + KMeans", f"{_output_base}/pca_kmeans.png")
         artifacts["PCA_KMeans"] = {
             "labels": _lbl1.tolist(),
             "metrics": {
@@ -72,7 +109,7 @@ if _d1.get("active", True):
                 "silhouette": _sil1, "chi": _chi1,
                 "n_components": int(_nc1),
             },
-            "plot_path": "",
+            "plot_path": _plot1,
         }
     except Exception as _e1:
         artifacts["PCA_KMeans_error"] = {
@@ -91,6 +128,7 @@ if _d2.get("active", True):
         _lbl2 = _gmm2.fit_predict(_red2)
         _sil2 = float(silhouette_score(_red2, _lbl2))
         _chi2 = float(calinski_harabasz_score(_red2, _lbl2))
+        _plot2 = _plot_dim_result(_red2, _lbl2, "PCA + GMM", f"{_output_base}/pca_gmm.png")
         artifacts["PCA_GMM"] = {
             "labels": _lbl2.tolist(),
             "metrics": {
@@ -98,7 +136,7 @@ if _d2.get("active", True):
                 "silhouette": _sil2, "chi": _chi2,
                 "n_components": int(_nc2),
             },
-            "plot_path": "",
+            "plot_path": _plot2,
         }
     except Exception as _e2:
         artifacts["PCA_GMM_error"] = {
@@ -124,6 +162,7 @@ if _d3.get("active", True) and _UMAP_OK:
         _lbl3 = KMeans(n_clusters=min(_k3, _n - 1), random_state=42, n_init=10).fit_predict(_red3)
         _sil3 = float(silhouette_score(_red3, _lbl3))
         _chi3 = float(calinski_harabasz_score(_red3, _lbl3))
+        _plot3 = _plot_dim_result(_red3, _lbl3, "UMAP + KMeans", f"{_output_base}/umap_kmeans.png")
         artifacts["UMAP_KMeans"] = {
             "labels": _lbl3.tolist(),
             "metrics": {
@@ -131,7 +170,7 @@ if _d3.get("active", True) and _UMAP_OK:
                 "silhouette": _sil3, "chi": _chi3,
                 "n_components": int(_nc3),
             },
-            "plot_path": "",
+            "plot_path": _plot3,
         }
     except Exception as _e3:
         artifacts["UMAP_KMeans_error"] = {
@@ -157,6 +196,7 @@ if _d4.get("active", True) and _TSNE_OK and _n <= 5000:
     _lbl4 = KMeans(n_clusters=min(_k4, _n - 1), random_state=42, n_init=10).fit_predict(_red4)
     _sil4 = float(silhouette_score(_red4, _lbl4))
     _chi4 = float(calinski_harabasz_score(_red4, _lbl4))
+    _plot4 = _plot_dim_result(_red4, _lbl4, "t-SNE + KMeans", f"{_output_base}/tsne_kmeans.png")
     artifacts["tSNE_KMeans"] = {
         "labels": _lbl4.tolist(),
         "metrics": {
@@ -164,7 +204,7 @@ if _d4.get("active", True) and _TSNE_OK and _n <= 5000:
             "silhouette": _sil4, "chi": _chi4,
             "n_components": 2,
         },
-        "plot_path": "",
+        "plot_path": _plot4,
     }
 
 # ========================================================================
