@@ -463,6 +463,9 @@ class ACESupervisor:
                 f"【沙箱超时】数据集 {_n_samples} 样本，"
                 f"沙箱超时调整为 {_base_timeout}s。"
             )
+        if getattr(settings, "deep_mode", False) and _n_samples > 5000:
+            _base_timeout += 60
+            trace.append(f"【沙箱超时】深度模式 +60s → {_base_timeout}s。")
 
         # ---- Large-sample downsampling (N > 30K) ---------------------------
         # O(N^2) algorithms (DBSCAN/OPTICS/HDBSCAN in Topology/Zoo experts)
@@ -485,7 +488,12 @@ class ACESupervisor:
                 trace.append(f"【主控】警告：专家 '{key}' 未在注册表中找到，跳过。")
                 continue
             try:
-                expert_results = expert.execute_with_self_correction(working_dataset, prompt, settings, constraints=constraints)
+                _expert_c = dict(constraints) if constraints else {}
+                if key == "dimension" and getattr(settings, "deep_mode", False):
+                    _expert_c["deep_mode"] = True
+                expert_results = expert.execute_with_self_correction(
+                    working_dataset, prompt, settings, constraints=_expert_c or None
+                )
                 all_results.extend(expert_results)
                 trace.extend(expert.last_logs)
                 expert_logs[key] = list(expert.last_logs)

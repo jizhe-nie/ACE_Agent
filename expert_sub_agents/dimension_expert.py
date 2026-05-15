@@ -767,6 +767,13 @@ class DimensionExpert(BaseExpert):
         if not decisions or "pipelines" not in decisions:
             decisions = _build_smart_defaults(n_features, n_samples, k, is_image)
 
+        # Smart skip: N > 5000 时自动关闭重管线（除非用户开启深度模式）
+        _n = dataset.X.shape[0]
+        _deep = bool(constraints and constraints.get("deep_mode"))
+        if _n > 5000 and not _deep:
+            for _p in ("ae_kmeans", "dec", "selflabel", "res_ae_kmeans"):
+                decisions.setdefault("pipelines", {}).setdefault(_p, {})["active"] = False
+
         # 3. Determine scaler class based on dataset type
         scaler_class = "MinMaxScaler" if is_image else "StandardScaler"
         normalize = "minmax" if is_image else "standard"

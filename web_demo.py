@@ -593,6 +593,15 @@ def main() -> None:
                             st.caption("(使用PCA降至2D可视化)")
                         st.info("提示：请在下方输入指令来启动智能体聚类任务。")
 
+        st.divider()
+        _deep = st.checkbox(
+            "深度模式（允许长时间等待）",
+            value=False,
+            help="勾选后可运行完整深度学习管线（AE/DEC/SelfLabel），"
+                 "有机会获得更高 ARI。默认关闭以快速获得结果。",
+        )
+        st.session_state["deep_mode"] = _deep
+
     _render_messages()
     if prompt := st.chat_input("输入指令，例如：使用谱聚类分析这个数据集..."):
         _handle_prompt(prompt, ds_name, sc, noise, seed, settings, fallback_settings, uploaded_file)
@@ -699,6 +708,7 @@ def _handle_prompt(
     if "supervisor" not in st.session_state:
         st.session_state["supervisor"] = _get_supervisor()
     supervisor = st.session_state.supervisor
+    settings.deep_mode = st.session_state.get("deep_mode", False)
 
     # Fresh session detection: if this is the first user message (only the
     # one we just appended), clear any leftover memory from a previous

@@ -54,6 +54,7 @@ class LLMSettings:
     temperature: float = 0.2
     enabled: bool = True
     fast_audit: bool = False  # Phase 5.3: skip bootstrap, Hopkins + CVI only
+    deep_mode: bool = False  # Phase 8: allow heavy AE/DEC pipelines on large data
 
     @property
     def is_configured(self) -> bool:
