@@ -14,37 +14,28 @@ from ACE_Agent.agent_core.router import MasterRouter
 from ACE_Agent.agent_core.schemas import (
     AlgorithmRunResult,
     DatasetBundle,
+    ModalityProfile,
     ProfileReport,
     RoutingDecision,
     SupervisorReport,
+    detect_modality,
 )
 from ACE_Agent.expert_sub_agents import build_expert_registry
 from ACE_Agent.tools.latex_generator import LatexReportGenerator
 from ACE_Agent.tools.llm_client import LLMSettings, UniversalLLMClient
 
 
-def _decompose_dim_to_image_hint(n_features: int) -> str | None:
-    """Factorize *n_features* into H×W or H×W×C image dimensions.
+def _image_shape_hint(n_features: int) -> str | None:
+    """Return a shape hint string (e.g. ``"32×32×3"``) or ``None``."""
+    from ACE_Agent.tools.data_factory import _decompose_image_shape
 
-    Returns a shape hint string (e.g. ``"32×32×3"``) or ``None``.
-    Only triggers for plausible image dimensions: n_features ≥ 256 (≈16×16)
-    and each spatial dimension ≥ 8.
-    """
-    if n_features < 256:
+    shape = _decompose_image_shape(n_features)
+    if shape is None:
         return None
-    for channels in (3, 1):
-        if n_features % channels != 0:
-            continue
-        n_flat = n_features // channels
-        root = int(round(n_flat ** 0.5))
-        for h in range(max(8, root - 8), root + 9):
-            if n_flat % h == 0:
-                w = n_flat // h
-                if 8 <= w <= 2048 and 0.2 <= h / w <= 5.0:
-                    if channels == 3:
-                        return f"{h}×{w}×3"
-                    return f"{h}×{w}"
-    return None
+    h, w, c = shape
+    if c == 3:
+        return f"{h}×{w}×3"
+    return f"{h}×{w}"
 
 
 class ACESupervisor:
@@ -53,7 +44,7 @@ class ACESupervisor:
     P0.5 变更（2026-04-20）：
     - 专家注册表改用 build_expert_registry()，包含 zoo 专家（含 DBSCAN/HDBSCAN）。
     - 默认激活策略：centroid + topology + zoo（三家并行）。
-    - dimension / deep_representation / multi_view 已注册但默认不激活；
+    - dimension / deep_representation 已注册但默认不激活；
     - Critic 重构为后验审计方（2026-04-29）：从并行池移除，在选出最优结果后
       独立运行 _execute_audit()，输出结构化 audit_report，不参与排名。
     - 新增 CODE_EXAMPLE 分流路径（只返回代码 Markdown，不走沙箱）。
@@ -266,8 +257,15 @@ class ACESupervisor:
             trace.append(f"【主控】检测到数据维度为 {n_features}，已自动激活维度专家。")
             active_experts.append("dimension")
 
+        # ---- Modality detection (unified profile for routing/graph/audit) --
+        modality = detect_modality(dataset)
+        trace.append(
+            f"【模态检测】{modality.modality_type}"
+            f"（metric={modality.distance_metric}）"
+        )
+
         # Phase 3 Topology-Aware: classify data structure and route experts
-        structure = self._classify_data_structure(dataset)
+        structure = self._classify_data_structure(dataset, modality=modality)
         trace.append(
             f"【数据结构分类】{structure['structure_class']}"
             f"（geodesic_distortion={structure.get('geodesic_distortion', 0):.3f}）"
@@ -298,9 +296,19 @@ class ACESupervisor:
                 "集成共识仅用于稳定性分析，不覆盖图分区结果。"
             )
 
+        # Phase 3.3: hierarchical structure routing
+        if structure.get("is_hierarchical"):
+            trace.append(
+                f"【分层结构检测】Ward linkage 分析发现主导性 k=2 分裂"
+                f"（分裂比={structure.get('hierarchical_k2_ratio', 0):.2f}），"
+                f"数据具有清晰的分层结构。"
+                f"建议：将 k=2 结果作为主要分层的有效替代方案；"
+                f"若需更细粒度聚类，考虑对子簇递归聚类。"
+            )
+
         # Phase 6: Result cache check — avoid recomputing known datasets
         # Skip cache when user explicitly asks to re-run (算法改进后需要重跑验证)
-        _force_rerun = any(kw in user_prompt for kw in ("重新", "重跑", "再跑", "再分析"))
+        _force_rerun = any(kw in user_prompt for kw in ("重新", "重跑", "再跑", "再分析", "再次"))
         _cached = None if _force_rerun else self._check_cache(dataset)
         if _cached:
             trace.append(
@@ -314,7 +322,7 @@ class ACESupervisor:
             # Build a minimal cached report
             return SupervisorReport(
                 dataset=dataset,
-                routing=RoutingDecision(None, [], trace),
+                routing=RoutingDecision(None, [], trace, modality=modality),
                 dataset_plot_path=Path(""),
                 output_dir=Path(""),
                 results=[],
@@ -355,6 +363,7 @@ class ACESupervisor:
         result = self._execute_full_analysis(
             dataset, user_prompt, llm_settings, trace, active_experts,
             constraints=constraints, progress_callback=progress_callback,
+            modality=modality,
             structure=structure,
             maze_connectivity_mode=maze_connectivity_mode,
             community_native_mode=community_native_mode,
@@ -385,10 +394,13 @@ class ACESupervisor:
         structure: dict[str, Any] | None = None,
         maze_connectivity_mode: bool = False,
         community_native_mode: bool = False,
+        modality: ModalityProfile | None = None,
     ) -> SupervisorReport:
         """执行完整的自动化聚类实验流。"""
         if structure is None:
             structure = {}
+        if modality is None:
+            modality = detect_modality(dataset)
 
         def _progress(msg: str, step: int = 0, total: int = 1) -> None:
             if progress_callback:
@@ -400,12 +412,12 @@ class ACESupervisor:
         expert_logs: dict[str, list[str]] = {}
 
         # ---- Phase 5.4: High-dim dimension gatekeeper --------------------
-        # When n_features > 100, force PCA (95% variance) before dispatching
+        # When n_features > 200, force PCA (95% variance) before dispatching
         # experts. High-dim raw data causes audit collapse and degrades
         # clustering quality due to the curse of dimensionality.
         working_dataset = dataset
         _n_features_raw = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
-        if _n_features_raw > 100:
+        if _n_features_raw > 200:
             _highdim_result = self._apply_highdim_reduction(dataset, trace)
             if _highdim_result is not None:
                 working_dataset = _highdim_result
@@ -430,7 +442,7 @@ class ACESupervisor:
         # BEFORE experts are dispatched, so they cluster the "unfolded" data.
         # Phase 3: uses _classify_data_structure() result for detection.
         #
-        # IMPORTANT: Skip when n_features > 100.  In high-dim spaces geodesic
+        # IMPORTANT: Skip when n_features > 200.  In high-dim spaces geodesic
         # distortion is unreliable (curse of dimensionality makes all point-pair
         # distances nearly equal), so manifold detection produces false positives.
         # UMAP on 512D → 3D destroys the semantic structure that CNN features encode.
@@ -446,6 +458,21 @@ class ACESupervisor:
             if embedded is not None:
                 working_dataset = embedded
                 trace.append("【流形预处理】已将嵌入数据集作为后续专家的输入。")
+
+        # ---- Sparse / text data cosine-space routing --------------------
+        # TF-IDF and other sparse count vectors measure semantic similarity
+        # via cosine distance, not Euclidean.  L2-normalize every row so
+        # that ||x-y||_2 becomes equivalent to 2*(1-cos(x,y)), making
+        # KMeans act as SphericalKMeans and k-NN graphs use cosine affinity.
+        if modality.l2_normalize:
+            from sklearn.preprocessing import normalize as _l2_norm
+            _X_normed = _l2_norm(working_dataset.X, norm="l2")
+            from dataclasses import replace as _dc_replace
+            working_dataset = _dc_replace(working_dataset, X=_X_normed)
+            trace.append(
+                f"【余弦路由】检测到{modality.modality_type}数据，已对特征做 L2 归一化。"
+                f"后续所有欧氏距离等效为余弦距离。"
+            )
 
         # ---- Adaptive sandbox timeout for large datasets -----------------
         _n_samples = working_dataset.X.shape[0]
@@ -467,6 +494,15 @@ class ACESupervisor:
             _base_timeout += 60
             trace.append(f"【沙箱超时】深度模式 +60s → {_base_timeout}s。")
 
+        # DTW distance matrix is O(N²T), roughly 30× slower than Euclidean.
+        # Bump timeout to avoid sandbox kills during time-series clustering.
+        if modality.modality_type == "time_series" and modality.ts_large_n:
+            _base_timeout = max(_base_timeout, 180)
+            trace.append(
+                f"【沙箱超时】时序数据 DTW 上调至 {_base_timeout}s"
+                f"（{_n_samples} 样本，O(N²T) 计算密集）。"
+            )
+
         # ---- Large-sample downsampling (N > 30K) ---------------------------
         # O(N^2) algorithms (DBSCAN/OPTICS/HDBSCAN in Topology/Zoo experts)
         # time out on large datasets.  Subsampling before dispatch keeps
@@ -476,6 +512,68 @@ class ACESupervisor:
             working_dataset = _subsample_result
 
         n_experts = len(active_experts)
+
+        # ---- Sparse data: inject cosine hint into expert prompt ----------
+        if modality.modality_type == "text":
+            _cosine_hint = (
+                "\n\n【重要提示】数据已做 L2 归一化，当前欧氏距离等效于余弦距离。"
+                "请优先使用 cosine_similarity 或直接在 L2 归一化数据上使用 KMeans（等价于 SphericalKMeans），"
+                "k-NN 图构建也应优先使用 cosine 相似度。"
+            )
+            prompt = prompt + _cosine_hint
+
+        # ---- Time-series data: inject DTW hint into expert prompt ---------
+        if modality.modality_type == "time_series":
+            _ts_shape = modality.ts_shape
+            _ts_orig = modality.ts_original_shape
+            _n_samples = working_dataset.X.shape[0]
+            _n_features = working_dataset.X.shape[1]
+
+            if _ts_shape and len(_ts_shape) == 2:
+                # Raw time-series: reshape is valid
+                _ts_T, _ts_F = _ts_shape
+                _dtw_hint = (
+                    f"\n\n【时间序列路由】此数据为时间序列，原始形状为 ({_ts_T} 时间步 × {_ts_F} 特征)，"
+                    f"已展平为 {_ts_T * _ts_F}D，共 {_n_samples} 个样本。"
+                    f"沙箱已预注入 TimeSeriesKMeans (from tslearn.clustering)，支持 DTW 距离。"
+                )
+                if _n_samples > 500:
+                    _dtw_hint += (
+                        f"\n⚠️ {_n_samples} 样本下完整 DTW 极易超时。加速策略：\n"
+                        f"方案A（推荐）: 先 stratify 降采样至 500~800 样本，"
+                        f"再使用 TimeSeriesKMeans(metric='dtw')。\n"
+                        f"方案B: TimeSeriesKMeans(n_clusters=k, metric='dtw',"
+                        f" metric_params={{'sakoe_chiba_radius': 3}}, max_iter=10, random_state=42)。\n"
+                        f"方案C: 用 tslearn.metrics.cdist_dtw 预计算 DTW 距离矩阵，"
+                        f"传入 SpectralClustering(affinity='precomputed')。\n"
+                        f"步骤: 1) X_ts = X.reshape(n_samples, {_ts_T}, {_ts_F})\n"
+                        f"      2) 选方案A/B/C执行聚类\n"
+                        f"      3) labels 写回 artifacts['labels']"
+                    )
+                else:
+                    _dtw_hint += (
+                        f"\n1. X_ts = X.reshape(n_samples, {_ts_T}, {_ts_F})\n"
+                        f"2. TimeSeriesKMeans(n_clusters=k, metric='dtw', max_iter=10, random_state=42)\n"
+                        f"3. DTW 自动处理时间轴伸缩，适合心音/语音等时序频谱数据。"
+                    )
+            else:
+                # PCA-reduced time-series: reshape not valid, suggest Euclidean-
+                # space methods that can handle non-spherical structure.
+                _ts_desc = ""
+                if _ts_orig and len(_ts_orig) == 2:
+                    _ts_desc = f"（原始时序形状 {_ts_orig[0]}×{_ts_orig[1]}）"
+                _dtw_hint = (
+                    f"\n\n【时间序列路由】此数据源自时间序列{_ts_desc}，"
+                    f"已 PCA 降维至 {_n_features}D（保留 99% 方差）。"
+                    f"原始时序形状已不可用（PCA 混合了时间轴），"
+                    f"请使用降维空间中的有效方法："
+                    f"\n1. SpectralClustering + k-NN 图（对非球形结构最有效）"
+                    f"\n2. HDBSCAN / OPTICS（密度聚类，可发现任意形状簇）"
+                    f"\n3. 可用 tslearn.metrics.cdist_dtw 在降维空间中计算 DTW 距离，"
+                    f"传入 SpectralClustering(affinity='precomputed')"
+                )
+            _dtw_hint += "\n请优先使用 DTW 距离或谱方法替代欧氏距离进行聚类。"
+            prompt = prompt + _dtw_hint
 
         for idx, key in enumerate(active_experts):
             expert = self.experts.get(key)
@@ -545,7 +643,7 @@ class ACESupervisor:
             )
 
         # Phase 5.1: 几何连通性预检 — 检测长程曲线结构
-        _conn_check = self._connectivity_pre_check(dataset, trace)
+        _conn_check = self._connectivity_pre_check(dataset, trace, modality=modality)
         if _conn_check["long_range_curve"]:
             trace.append(
                 "【连通性预检】检测到长程曲线/流形结构！"
@@ -570,6 +668,7 @@ class ACESupervisor:
         ranking = self._compute_informed_ranking(
             all_results, working_dataset, trace,
             centroid_ban=_conn_check["centroid_ban"],
+            modality=modality,
         )
         best = ranking[0]
 
@@ -616,122 +715,134 @@ class ACESupervisor:
                         _all_independent_aris.append(
                             float(_fail_ari_fn(_y_fail, np.asarray(_rl, dtype=int).ravel()))
                         )
-            if _all_independent_aris and max(_all_independent_aris) < 0.7:
-                _deep_pipeline_triggered = True
-                _best_independent_ari = max(_all_independent_aris)
-                trace.append(
-                    f"【FAILED / 结构识别失败】所有独立算法 ARI 均低于 0.7"
-                    f"（最高 ARI={_best_independent_ari:.3f}），"
-                    f"系统判定当前欧氏空间方法无法有效捕捉数据结构。"
-                    f"自动触发 Deep Pipeline（DimensionExpert + UMAP 流形嵌入）。"
-                )
-                _progress("FAILED 裁决：触发 Geodesic Deep Pipeline...")
-                _deep_results: list[AlgorithmRunResult] = []
-
-                # Phase 5.4: image semantic awareness — detect image-shaped data
-                # (e.g. 3072=32×32×3 for CIFAR-10, 784=28×28 for MNIST).
-                # Raw pixel clustering fails beyond ~10D; flag for conv pipeline.
-                _is_image_data = self._detect_image_data(dataset)
-                if _is_image_data:
+            if _all_independent_aris:
+                _max_independent_ari = max(_all_independent_aris)
+                if _max_independent_ari < 0.2:
+                    # ARI < 0.2: data structure fundamentally inaccessible via
+                    # Euclidean methods — UMAP embedding cannot rescue this.
                     trace.append(
-                        f"【图像语义感知】检测到图像形数据"
-                        f"（{_n_features_raw}D = {_is_image_data}），"
-                        f"原始像素聚类在 ≥10D 时失效。"
-                        f"如需语义分组请使用 CNN 特征提取或 Conv-AE。"
+                        f"【诚实失败快速出口】ARI < 0.2（max={_max_independent_ari:.3f}），"
+                        f"数据结构无法通过欧氏空间方法捕捉，跳过救助管线。"
                     )
-
-                # Path A: UMAP embedding + topology expert (OPTICS/HDBSCAN on manifold)
-                try:
-                    import numpy as _gd_np
-                    _X_orig = _gd_np.asarray(working_dataset.X, dtype=float)
-                    _n_feat = _X_orig.shape[1] if _X_orig.ndim == 2 else 1
-                    if _n_feat > 2:
-                        import umap
-                        _reducer = umap.UMAP(
-                            n_components=min(3, _n_feat),
-                            n_neighbors=min(30, max(5, _X_orig.shape[0] // 50)),
-                            min_dist=0.1, metric="euclidean", random_state=42,
-                        )
-                        _X_umap = _reducer.fit_transform(_X_orig)
-                    else:
-                        _X_umap = _X_orig
-                    _umap_ds = DatasetBundle(
-                        name=f"{working_dataset.name}_umap_rescue",
-                        display_name=f"{working_dataset.display_name} (UMAP Rescue)",
-                        X=_X_umap.astype(float),
-                        y=working_dataset.y,
-                        description=f"UMAP embedding of {working_dataset.display_name} for geodesic rescue.",
-                        shape_family="manifold",
-                        metadata={**working_dataset.metadata, "preprocessing": "umap_rescue"},
-                    )
+                    _deep_pipeline_triggered = False
+                elif _max_independent_ari < 0.7:
+                    _deep_pipeline_triggered = True
+                    _best_independent_ari = _max_independent_ari
                     trace.append(
-                        f"【Geodesic Pipeline】UMAP 嵌入完成 → {_X_umap.shape[1]}D,"
-                        f" 派发 TopologyExpert (HDBSCAN + mutual k-NN Spectral)。"
+                        f"【FAILED / 结构识别失败】所有独立算法 ARI 均低于 0.7"
+                        f"（最高 ARI={_best_independent_ari:.3f}），"
+                        f"系统判定当前欧氏空间方法无法有效捕捉数据结构。"
+                        f"自动触发 Deep Pipeline（DimensionExpert + UMAP 流形嵌入）。"
                     )
-                    topo = self.experts.get("topology")
-                    if topo is not None:
-                        _topo_results = topo.execute_with_self_correction(
-                            _umap_ds, prompt, settings, constraints=constraints
-                        )
-                        if _topo_results:
-                            _deep_results.extend(_topo_results)
-                            trace.extend(topo.last_logs)
-                            expert_logs["topology_rescue"] = list(topo.last_logs)
-                            trace.append(
-                                f"【Geodesic Pipeline】TopologyExpert 产出 {len(_topo_results)} 个结果。"
-                            )
-                except Exception as _umap_exc:
-                    trace.append(f"【Geodesic Pipeline】UMAP 路径失败: {_umap_exc}")
+                    _progress("FAILED 裁决：触发 Geodesic Deep Pipeline...")
+                    _deep_results: list[AlgorithmRunResult] = []
 
-                # Path B: Graph community discovery on wall-aware graph
-                try:
-                    _graph_expert = self.experts.get("graph")
-                    if _graph_expert is not None:
-                        _graph_results = _graph_expert.execute_with_self_correction(
-                            working_dataset, prompt, settings, constraints=constraints
+                if _deep_pipeline_triggered:
+                    # Phase 5.4: image semantic awareness — detect image-shaped data
+                    # (e.g. 3072=32×32×3 for CIFAR-10, 784=28×28 for MNIST).
+                    # Raw pixel clustering fails beyond ~10D; flag for conv pipeline.
+                    _is_image_data = self._detect_image_data(dataset)
+                    if _is_image_data:
+                        trace.append(
+                            f"【图像语义感知】检测到图像形数据"
+                            f"（{_n_features_raw}D = {_is_image_data}），"
+                            f"原始像素聚类在 ≥10D 时失效。"
+                            f"如需语义分组请使用 CNN 特征提取或 Conv-AE。"
                         )
-                        if _graph_results:
-                            _deep_results.extend(_graph_results)
-                            trace.extend(_graph_expert.last_logs)
-                            expert_logs["graph_rescue"] = list(_graph_expert.last_logs)
-                            trace.append(
-                                f"【Geodesic Pipeline】GraphExpert 产出 {len(_graph_results)} 个结果。"
-                            )
-                except Exception as _graph_exc:
-                    trace.append(f"【Geodesic Pipeline】Graph 路径失败: {_graph_exc}")
 
-                # Path C: fallback to DimensionExpert if A and B both failed
-                if not _deep_results:
-                    trace.append("【Geodesic Pipeline】路径 A+B 均失败，回落 DimensionExpert。")
-                    dim_expert = self.experts.get("dimension")
-                    if dim_expert is not None:
-                        try:
-                            _dim_results = dim_expert.execute_with_self_correction(
+                    # Path A: UMAP embedding + topology expert (OPTICS/HDBSCAN on manifold)
+                    try:
+                        import numpy as _gd_np
+                        _X_orig = _gd_np.asarray(working_dataset.X, dtype=float)
+                        _n_feat = _X_orig.shape[1] if _X_orig.ndim == 2 else 1
+                        if _n_feat > 2:
+                            import umap
+                            _reducer = umap.UMAP(
+                                n_components=min(3, _n_feat),
+                                n_neighbors=min(30, max(5, _X_orig.shape[0] // 50)),
+                                min_dist=0.1, metric="euclidean", random_state=42,
+                            )
+                            _X_umap = _reducer.fit_transform(_X_orig)
+                        else:
+                            _X_umap = _X_orig
+                        _umap_ds = DatasetBundle(
+                            name=f"{working_dataset.name}_umap_rescue",
+                            display_name=f"{working_dataset.display_name} (UMAP Rescue)",
+                            X=_X_umap.astype(float),
+                            y=working_dataset.y,
+                            description=f"UMAP embedding of {working_dataset.display_name} for geodesic rescue.",
+                            shape_family="manifold",
+                            metadata={**working_dataset.metadata, "preprocessing": "umap_rescue"},
+                        )
+                        trace.append(
+                            f"【Geodesic Pipeline】UMAP 嵌入完成 → {_X_umap.shape[1]}D,"
+                            f" 派发 TopologyExpert (HDBSCAN + mutual k-NN Spectral)。"
+                        )
+                        topo = self.experts.get("topology")
+                        if topo is not None:
+                            _topo_results = topo.execute_with_self_correction(
+                                _umap_ds, prompt, settings, constraints=constraints
+                            )
+                            if _topo_results:
+                                _deep_results.extend(_topo_results)
+                                trace.extend(topo.last_logs)
+                                expert_logs["topology_rescue"] = list(topo.last_logs)
+                                trace.append(
+                                    f"【Geodesic Pipeline】TopologyExpert 产出 {len(_topo_results)} 个结果。"
+                                )
+                    except Exception as _umap_exc:
+                        trace.append(f"【Geodesic Pipeline】UMAP 路径失败: {_umap_exc}")
+
+                    # Path B: Graph community discovery on wall-aware graph
+                    try:
+                        _graph_expert = self.experts.get("graph")
+                        if _graph_expert is not None:
+                            _graph_results = _graph_expert.execute_with_self_correction(
                                 working_dataset, prompt, settings, constraints=constraints
                             )
-                            if _dim_results:
-                                _deep_results.extend(_dim_results)
-                                trace.extend(dim_expert.last_logs)
-                                expert_logs["dimension_fallback"] = list(dim_expert.last_logs)
-                        except Exception as _dim_exc:
-                            trace.append(f"【Geodesic Pipeline】DimensionExpert 回落也失败: {_dim_exc}")
+                            if _graph_results:
+                                _deep_results.extend(_graph_results)
+                                trace.extend(_graph_expert.last_logs)
+                                expert_logs["graph_rescue"] = list(_graph_expert.last_logs)
+                                trace.append(
+                                    f"【Geodesic Pipeline】GraphExpert 产出 {len(_graph_results)} 个结果。"
+                                )
+                    except Exception as _graph_exc:
+                        trace.append(f"【Geodesic Pipeline】Graph 路径失败: {_graph_exc}")
 
-                if _deep_results:
-                    all_results.extend(_deep_results)
-                    ranking = self._compute_informed_ranking(
-                        all_results, working_dataset, trace,
-                        centroid_ban=_conn_check["centroid_ban"],
-                    )
-                    best = ranking[0]
-                    _new_best_ari = self._compute_best_ari(ranking, working_dataset)
-                    _new_best_internal = best.metrics.get("score", 0) if hasattr(best, "metrics") else 0
-                    _ari_display = f"{_new_best_ari:.3f}" if (_new_best_ari is not None and _new_best_ari > 0) else f"internal={_new_best_internal:.3f}"
-                    trace.append(
-                        f"【Geodesic Pipeline 完成】产出 {len(_deep_results)} 个结果，"
-                        f"重新排名后最佳 {_ari_display}"
-                    )
-                else:
-                    trace.append("【Geodesic Pipeline】所有路径均未产出有效结果。")
+                    # Path C: fallback to DimensionExpert if A and B both failed
+                    if not _deep_results:
+                        trace.append("【Geodesic Pipeline】路径 A+B 均失败，回落 DimensionExpert。")
+                        dim_expert = self.experts.get("dimension")
+                        if dim_expert is not None:
+                            try:
+                                _dim_results = dim_expert.execute_with_self_correction(
+                                    working_dataset, prompt, settings, constraints=constraints
+                                )
+                                if _dim_results:
+                                    _deep_results.extend(_dim_results)
+                                    trace.extend(dim_expert.last_logs)
+                                    expert_logs["dimension_fallback"] = list(dim_expert.last_logs)
+                            except Exception as _dim_exc:
+                                trace.append(f"【Geodesic Pipeline】DimensionExpert 回落也失败: {_dim_exc}")
+
+                    if _deep_results:
+                        all_results.extend(_deep_results)
+                        ranking = self._compute_informed_ranking(
+                            all_results, working_dataset, trace,
+                            centroid_ban=_conn_check["centroid_ban"],
+                            modality=modality,
+                        )
+                        best = ranking[0]
+                        _new_best_ari = self._compute_best_ari(ranking, working_dataset)
+                        _new_best_internal = best.metrics.get("score", 0) if hasattr(best, "metrics") else 0
+                        _ari_display = f"{_new_best_ari:.3f}" if (_new_best_ari is not None and _new_best_ari > 0) else f"internal={_new_best_internal:.3f}"
+                        trace.append(
+                            f"【Geodesic Pipeline 完成】产出 {len(_deep_results)} 个结果，"
+                            f"重新排名后最佳 {_ari_display}"
+                        )
+                    else:
+                        trace.append("【Geodesic Pipeline】所有路径均未产出有效结果。")
 
         # 后验审计：Critic 独立审查最优结果
         # Phase 5.4: audit in the reduced space (working_dataset), not the
@@ -739,7 +850,16 @@ class ACESupervisor:
         # matrices that cause 120s+ timeout even with subsampling.
         _progress("正在进行 Critic 后验审计...")
         _audit_ds = working_dataset if working_dataset is not dataset else dataset
-        audit_report = self._execute_audit(best, _audit_ds, settings, trace)
+
+        # 审计特征空间对齐：若优胜算法使用了降维嵌入，在嵌入空间中审计
+        _embed_path = getattr(best, "embedding_path", None)
+        if _embed_path and _embed_path.exists():
+            _embed_X = np.load(str(_embed_path))
+            from dataclasses import replace as _dc_replace
+            _audit_ds = _dc_replace(_audit_ds, X=_embed_X.astype(float))
+            trace.append(f"【审计】切换至优胜算法嵌入空间 ({_embed_X.shape[1]}D) 进行审计。")
+
+        audit_report = self._execute_audit(best, _audit_ds, settings, trace, modality=modality)
 
         # Phase 5.4: Audit collapse detection — when metrics are sentinel
         # values (negative = not computed due to sandbox timeout), flag
@@ -849,7 +969,8 @@ class ACESupervisor:
 
         # Critic 2.0 反馈闭环：审计→约束重试→复验
         retry_results = self._handle_audit_feedback(
-            audit_report, working_dataset, prompt, settings, trace, active_experts
+            audit_report, working_dataset, prompt, settings, trace, active_experts,
+            all_results=all_results,
         )
         if retry_results:
             all_results.extend(retry_results)
@@ -867,11 +988,12 @@ class ACESupervisor:
                 all_results, working_dataset, trace,
                 centroid_ban=_conn_check["centroid_ban"],
                 blocked_algorithms=_blocked if _blocked else None,
+                modality=modality,
             )
             best = ranking[0]
             trace.append("【Critic 2.0】约束重试完成，已重新排名。")
             _progress("正在重新审计约束重试结果...")
-            audit_report = self._execute_audit(best, _audit_ds, settings, trace)
+            audit_report = self._execute_audit(best, _audit_ds, settings, trace, modality=modality)
 
         # 集成共识：仅在 Critic 对单一最优结果有保留时触发
         # Phase 3.1: maze mode 始终触发 ensemble 以便 graph consensus
@@ -902,7 +1024,9 @@ class ACESupervisor:
                     _hr_best_internal = _hr_s
             # Honest retreat only when ARI < 0.4 AND no high-quality rescue exists
             _has_rescue_quality = _deep_pipeline_triggered and _hr_best_internal > 0.5
-            if _hr_max_ari < 0.4 and not _has_rescue_quality:
+            # Tightened gate: absolute floor at ARI < 0.2 always skips;
+            # ARI < 0.3 only skips when rescue didn't produce high internal quality.
+            if _hr_max_ari < 0.2 or (_hr_max_ari < 0.3 and not _has_rescue_quality):
                 _honest_retreat = True
                 trace.append(
                     f"【集成诚实退避】所有独立专家 ARI < 0.4（max={_hr_max_ari:.3f}），"
@@ -970,7 +1094,8 @@ class ACESupervisor:
                 all_results.append(consensus_result)
                 # Re-rank with consensus result included
                 ranking = self._compute_informed_ranking(all_results, working_dataset, trace,
-                                                         centroid_ban=_conn_check["centroid_ban"])
+                                                         centroid_ban=_conn_check["centroid_ban"],
+                                                         modality=modality)
                 best = ranking[0]
                 # Phase 3.2: community native mode — ensemble is stability-only
                 if community_native_mode:
@@ -999,7 +1124,8 @@ class ACESupervisor:
                 )
                 # Re-rank via informed scoring (respects ARI priority when labels exist)
                 ranking = self._compute_informed_ranking(all_results, working_dataset, trace,
-                                                         centroid_ban=_conn_check["centroid_ban"])
+                                                         centroid_ban=_conn_check["centroid_ban"],
+                                                         modality=modality)
                 best = ranking[0]
                 if best.algorithm_name == "GraphCommunity_Result":
                     trace.append(
@@ -1082,9 +1208,14 @@ class ACESupervisor:
         report = SupervisorReport(
             dataset=dataset,
             routing=RoutingDecision(
-                profile=ProfileReport(dataset.X.shape[0], dataset.X.shape[1], 0, 0, 0, False, False, False),
+                profile=ProfileReport(
+                    dataset.X.shape[0], dataset.X.shape[1], 0, 0, 0, False, False, False,
+                    modality_type=modality.modality_type,
+                    modality_metric=modality.distance_metric,
+                ),
                 selected_experts=[],
                 trace=trace,
+                modality=modality,
             ),
             dataset_plot_path=self._save_raw_plot(dataset, output_dir),
             output_dir=output_dir,
@@ -1115,6 +1246,7 @@ class ACESupervisor:
         dataset: DatasetBundle,
         settings: LLMSettings,
         trace: list[str],
+        modality: ModalityProfile | None = None,
     ) -> dict[str, Any] | None:
         """Run CriticExpert as a post-hoc auditor on the winning result.
 
@@ -1164,7 +1296,7 @@ class ACESupervisor:
             )
 
         try:
-            audit = critic.execute_audit(winner, dataset, settings)
+            audit = critic.execute_audit(winner, dataset, settings, modality=modality)
             if audit and not audit.get("degraded"):
                 endorsement = audit.get("endorsement", "?")
                 confidence = audit.get("confidence_level", "?")
@@ -1183,7 +1315,7 @@ class ACESupervisor:
                     else:
                         from dataclasses import replace
                         _fast_settings = replace(settings, fast_audit=True)
-                    _fast_audit = critic.execute_audit(winner, dataset, _fast_settings)
+                    _fast_audit = critic.execute_audit(winner, dataset, _fast_settings, modality=modality)
                     if _fast_audit and not _fast_audit.get("degraded"):
                         _fast_audit["fast_audit_retry"] = True
                         audit = _fast_audit
@@ -1213,7 +1345,7 @@ class ACESupervisor:
                                     _fast_settings, fast_audit=True, audit_relaxed=True
                                 )
                             _relaxed_audit = critic.execute_audit(
-                                winner, dataset, _relaxed_settings,
+                                winner, dataset, _relaxed_settings, modality=modality,
                             )
                             if _relaxed_audit and not _relaxed_audit.get("degraded"):
                                 _relaxed_audit["fast_audit_retry"] = True
@@ -1247,7 +1379,7 @@ class ACESupervisor:
                     else:
                         from dataclasses import replace
                         _fast_settings = replace(settings, fast_audit=True)
-                    _fast_audit = critic.execute_audit(winner, dataset, _fast_settings)
+                    _fast_audit = critic.execute_audit(winner, dataset, _fast_settings, modality=modality)
                     if _fast_audit and not _fast_audit.get("degraded"):
                         _fast_audit["fast_audit_retry"] = True
                         audit = _fast_audit
@@ -1281,7 +1413,7 @@ class ACESupervisor:
                                 _fast_settings, fast_audit=True, audit_relaxed=True
                             )
                         _relaxed_audit = critic.execute_audit(
-                            winner, dataset, _relaxed_settings,
+                            winner, dataset, _relaxed_settings, modality=modality,
                         )
                         if _relaxed_audit and not _relaxed_audit.get("degraded"):
                             _relaxed_audit["fast_audit_retry"] = True
@@ -1361,6 +1493,7 @@ class ACESupervisor:
         settings: LLMSettings,
         trace: list[str],
         active_experts: list[str],
+        all_results: list[AlgorithmRunResult] | None = None,
     ) -> list[AlgorithmRunResult]:
         """Critic 2.0 closed-loop: RETRY with constraints, max 2 attempts.
 
@@ -1379,6 +1512,36 @@ class ACESupervisor:
             return []
 
         # action == "RETRY"
+        # ---- Structural failure pre-check: skip RETRY if max ARI < 0.2 ----
+        if all_results and dataset.y is not None:
+            import numpy as _np_retry
+            from sklearn.metrics import adjusted_rand_score as _ari_retry
+            _y_true_retry = _np_retry.asarray(dataset.y, dtype=int).ravel()
+            _max_ari_retry = 0.0
+            for _r in all_results:
+                _rl = getattr(_r, "labels", None)
+                if _rl is not None and hasattr(_rl, "__len__") and len(_rl) > 0:
+                    with contextlib.suppress(Exception):
+                        _a = float(_ari_retry(_y_true_retry, _np_retry.asarray(_rl, dtype=int).ravel()))
+                        if _a > _max_ari_retry:
+                            _max_ari_retry = _a
+            if _max_ari_retry < 0.2:
+                trace.append(
+                    f"【诚实失败快速出口】ARI < 0.2（max={_max_ari_retry:.3f}），"
+                    f"数据结构无法通过欧氏空间方法捕捉。"
+                    f"结构性问题无法通过约束重试修复，跳过 RETRY。"
+                )
+                return []
+            # Upper-bound gate: when the best result already achieves ARI ≥ 0.7,
+            # RETRY can only make things worse (blocking the winner + re-ranking
+            # among weaker algorithms degrades the final outcome).
+            if _max_ari_retry >= 0.7:
+                trace.append(
+                    f"【RETRY 门禁】最佳 ARI={_max_ari_retry:.3f} ≥ 0.7，"
+                    f"当前结果已充分捕捉数据结构，跳过 RETRY（避免封锁优胜算法导致退化）。"
+                )
+                return []
+
         constraints = audit_report.get("retry_constraints", {})
         if not constraints:
             trace.append("【Critic 2.0】RETRY 但无有效约束，跳过重试。")
@@ -1497,6 +1660,8 @@ class ACESupervisor:
     @staticmethod
     def _classify_data_structure(
         dataset: DatasetBundle,
+        *,
+        modality: ModalityProfile | None = None,
     ) -> dict[str, Any]:
         """Classify data into: spherical / non_convex / manifold /
         graph_connected / density / hierarchical.
@@ -1516,36 +1681,54 @@ class ACESupervisor:
         # Default: use shape_family hint
         structure_class = sf
 
-        # Compute geodesic distortion for ≤50D data.
-        # Uses anchor sampling for N > 2000 to keep cost bounded.
+        # ---- Geodesic distortion computation -----------------------------
+        # k-NN in raw >50D space is unreliable (curse of dimensionality).
+        # For high-D data, PCA-reduce to ≤32D preserving 95% variance first.
+        import numpy as np
         geodesic_distortion = 0.0
         wall_crossings = 0
-        if 1 <= n_features <= 50 and n_samples >= 50:
+        _pca_variance = 1.0
+        _geo_pca_applied = False
+        _X_for_geo = np.asarray(dataset.X, dtype=float)
+        if n_features > 50 and n_samples >= 50:
+            try:
+                from sklearn.decomposition import PCA
+                _max_components = min(32, n_features, n_samples - 1)
+                _pca_tmp = PCA(n_components=_max_components, random_state=42)
+                _pca_tmp.fit(_X_for_geo)
+                _cumvar = np.cumsum(_pca_tmp.explained_variance_ratio_)
+                _n95 = int(np.searchsorted(_cumvar, 0.95) + 1)
+                _n_keep = max(2, min(_max_components, _n95))
+                _pca_for_geo = PCA(n_components=_n_keep, random_state=42)
+                _X_for_geo = _pca_for_geo.fit_transform(_X_for_geo)
+                _pca_variance = float(np.sum(_pca_for_geo.explained_variance_ratio_))
+                _geo_pca_applied = True
+            except Exception:
+                _X_for_geo = np.empty((0, 0))
+        _n_geo_features = _X_for_geo.shape[1] if _X_for_geo.ndim == 2 else 0
+        if _X_for_geo.shape[0] >= 50 and _n_geo_features >= 1:
             from ACE_Agent.tools.graph_builder import GraphBuilder as _GB
             try:
-                import numpy as np
-                X_np = np.asarray(dataset.X, dtype=float)
-                adj = _GB.build_knn_graph(X_np)
+                _k = min(30, max(5, int(np.sqrt(n_samples))))
+                _metric = modality.distance_metric if modality else "euclidean"
+                adj = _GB.build_knn_graph(_X_for_geo, k=_k, metric=_metric)
                 if n_samples <= 2000:
                     geo_dists = _GB.compute_geodesic_distances(adj)
-                    geodesic_distortion = _GB.compute_distortion(X_np, geo_dists, sample_size=min(n_samples, 500))
+                    geodesic_distortion = _GB.compute_distortion(_X_for_geo, geo_dists, sample_size=min(n_samples, 500))
                 else:
-                    # Sample anchors for large N
                     rng = np.random.RandomState(42)
                     n_anchors = min(500, n_samples)
                     anchors = rng.choice(n_samples, n_anchors, replace=False)
                     geo_dists = _GB.compute_geodesic_distances(adj, indices=anchors)
-                    geodesic_distortion = _GB.compute_distortion(X_np, geo_dists, sample_size=min(n_anchors, 200))
+                    geodesic_distortion = _GB.compute_distortion(_X_for_geo, geo_dists, sample_size=min(n_anchors, 200))
             except Exception:
                 pass
 
         # Detect wall-crossings when distortion is high
-        if geodesic_distortion > 0.3 and n_samples <= 5000:
+        if geodesic_distortion > 0.3 and n_samples <= 5000 and _n_geo_features >= 1:
             from ACE_Agent.tools.graph_builder import GraphBuilder as _GB_wall
             try:
-                import numpy as np
-                X_np = np.asarray(dataset.X, dtype=float)
-                adj = _GB_wall.build_knn_graph(X_np)
+                adj = _GB_wall.build_knn_graph(_X_for_geo, metric=_metric)
                 if n_samples <= 2000:
                     geo_dists = _GB_wall.compute_geodesic_distances(adj)
                 else:
@@ -1553,13 +1736,37 @@ class ACESupervisor:
                     n_anchors = min(500, n_samples)
                     anchors = rng.choice(n_samples, n_anchors, replace=False)
                     geo_dists = _GB_wall.compute_geodesic_distances(adj, indices=anchors)
-                pairs = _GB_wall.detect_wall_crossings(X_np, adj, geo_dists)
+                pairs = _GB_wall.detect_wall_crossings(_X_for_geo, adj, geo_dists)
                 wall_crossings = len(pairs)
             except Exception:
                 pass
 
+        # ---- Hierarchical structure detection (Ward linkage) ------------
+        _is_hierarchical = False
+        _hierarchical_k2_ratio = 0.0
+        if n_samples >= 30 and _n_geo_features >= 1:
+            try:
+                from scipy.cluster.hierarchy import ward
+                _n_ward = min(n_samples, 200)
+                if _n_ward < n_samples:
+                    _idx_ward = np.random.RandomState(42).choice(n_samples, _n_ward, replace=False)
+                    _X_ward = _X_for_geo[_idx_ward]
+                else:
+                    _X_ward = _X_for_geo
+                _Z = ward(_X_ward)
+                _merge_dists = _Z[:, 2]
+                if len(_merge_dists) >= 3:
+                    _k2_drop = _merge_dists[-1] / (_merge_dists.sum() + 1e-12)
+                    _hierarchical_k2_ratio = float(_k2_drop)
+                    if _hierarchical_k2_ratio > 0.6:
+                        _is_hierarchical = True
+            except Exception:
+                pass
+
         # ---- Classification rules ----
-        if (geodesic_distortion > 0.5
+        if _is_hierarchical and geodesic_distortion < 0.3:
+            structure_class = "hierarchical"
+        elif (geodesic_distortion > 0.5
                 or (sf in ("non_convex", "manifold") and geodesic_distortion > 0.3)
                 or (sf == "manifold" and geodesic_distortion > 0.15)):
             structure_class = "graph_connected"
@@ -1568,13 +1775,16 @@ class ACESupervisor:
 
         # ---- Strategy ----
         activate_graph_expert = structure_class in ("graph_connected",) or geodesic_distortion > 0.5
-        topology_boost = structure_class in ("graph_connected", "non_convex", "manifold")
+        topology_boost = structure_class in ("graph_connected", "non_convex", "manifold", "hierarchical")
         centroid_suppress = structure_class in ("graph_connected",) and geodesic_distortion > 0.3
 
         return {
             "structure_class": structure_class,
             "geodesic_distortion": geodesic_distortion,
             "wall_crossings": wall_crossings,
+            "is_hierarchical": _is_hierarchical,
+            "hierarchical_k2_ratio": _hierarchical_k2_ratio,
+            "pca_variance_retained": _pca_variance if _geo_pca_applied else 1.0,
             "recommended_strategy": {
                 "activate_graph_expert": activate_graph_expert,
                 "topology_boost": topology_boost,
@@ -1590,6 +1800,8 @@ class ACESupervisor:
     def _connectivity_pre_check(
         dataset: DatasetBundle,
         trace: list[str],
+        *,
+        modality: ModalityProfile | None = None,
     ) -> dict[str, Any]:
         """Run a lightweight k-NN connectivity check BEFORE expert dispatch.
 
@@ -1611,25 +1823,37 @@ class ACESupervisor:
             return {"long_range_curve": False, "centroid_ban": set(), "geodesic_distortion": 0.0}
 
         # For high-dim data (> 50D), geodesic distortion on raw features is
-        # unreliable due to the curse of dimensionality — skip pre-check.
+        # unreliable due to the curse of dimensionality — PCA-reduce first.
+        import numpy as np
         if n_features > 50:
-            return {"long_range_curve": False, "centroid_ban": set(), "geodesic_distortion": 0.0}
+            try:
+                from sklearn.decomposition import PCA as _pca_conn
+                X_raw = np.asarray(dataset.X, dtype=float)
+                _max_c = min(32, n_features, n_samples - 1)
+                _pca_tmp = _pca_conn(n_components=_max_c, random_state=42).fit(X_raw)
+                _cumvar = np.cumsum(_pca_tmp.explained_variance_ratio_)
+                _n95 = int(np.searchsorted(_cumvar, 0.95) + 1)
+                _n_keep = max(2, min(_max_c, _n95))
+                X_for_conn = _pca_conn(n_components=_n_keep, random_state=42).fit_transform(X_raw)
+            except Exception:
+                return {"long_range_curve": False, "centroid_ban": set(), "geodesic_distortion": 0.0}
+        else:
+            X_for_conn = np.asarray(dataset.X, dtype=float)
 
         from ACE_Agent.tools.graph_builder import GraphBuilder as _GB2
+        _conn_metric = modality.distance_metric if modality else "euclidean"
         try:
-            import numpy as np
-            X_np = np.asarray(dataset.X, dtype=float)
-            adj = _GB2.build_knn_graph(X_np, k=min(10, max(3, int(np.sqrt(n_samples)) // 4)))
+            adj = _GB2.build_knn_graph(X_for_conn, k=min(10, max(3, int(np.sqrt(n_samples)) // 4)), metric=_conn_metric)
 
             if n_samples <= 2000:
                 geo_dists = _GB2.compute_geodesic_distances(adj)
-                distortion = _GB2.compute_distortion(X_np, geo_dists, sample_size=min(n_samples, 500))
+                distortion = _GB2.compute_distortion(X_for_conn, geo_dists, sample_size=min(n_samples, 500))
             else:
                 rng = np.random.RandomState(42)
                 n_anchors = min(500, n_samples)
                 anchors = rng.choice(n_samples, n_anchors, replace=False)
                 geo_dists = _GB2.compute_geodesic_distances(adj, indices=anchors)
-                distortion = _GB2.compute_distortion(X_np, geo_dists, sample_size=min(n_anchors, 200))
+                distortion = _GB2.compute_distortion(X_for_conn, geo_dists, sample_size=min(n_anchors, 200))
         except Exception:
             return {"long_range_curve": False, "centroid_ban": set(), "geodesic_distortion": 0.0}
 
@@ -1752,7 +1976,7 @@ class ACESupervisor:
         if (dataset.metadata or {}).get("is_image") is False:
             return None
         n = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
-        return _decompose_dim_to_image_hint(n)
+        return _image_shape_hint(n)
 
     # ------------------------------------------------------------------
     # Topology / Manifold detection & preprocessing (Phase 2.4)
@@ -1803,7 +2027,7 @@ class ACESupervisor:
         dataset: DatasetBundle,
         trace: list[str],
     ) -> DatasetBundle | None:
-        """Reduce high-dim data (>100D) via PCA retaining 95% variance
+        """Reduce high-dim data (>200D) via PCA retaining 95% variance
         before clustering experts are dispatched.
 
         High-dimensional raw data causes the curse of dimensionality,
@@ -1822,7 +2046,7 @@ class ACESupervisor:
             X = np.asarray(dataset.X, dtype=float)
             n_samples, n_features = X.shape
 
-            if n_features <= 100:
+            if n_features <= 200:
                 return None
 
             # Phase 6: image data carries semantic info in raw pixel dimensions.
@@ -1838,8 +2062,57 @@ class ACESupervisor:
                 )
                 return None
 
+            # Time-series data: raw (N, T*F) at high dimension causes two problems:
+            #  (a) Euclidean methods drown in the curse of dimensionality
+            #      (e.g. Spectral_kNN O(N²D) times out at 4032D).
+            #  (b) DTW on the raw shape is O(N²T²) and also times out for
+            #      moderate N (~3000).
+            # Solution: apply PCA to a moderate dimension (200D, 99% variance)
+            # so Euclidean methods can run, while DTW-aware experts can still
+            # use tslearn metrics in the reduced space.  We strip the ts_shape
+            # hint from metadata after PCA since reshape→(N,T,F) is no longer
+            # valid — the DTW prompt will steer experts toward the reduced form.
+            if _meta.get("is_time_series") and _meta.get("ts_shape"):
+                _ts_T, _ts_F = _meta["ts_shape"]
+                # Higher cap for time-series: 200D lets Spectral survive while
+                # keeping most of the temporal signal.
+                n_components_max = min(200, n_features, n_samples - 1)
+                pca = PCA(n_components=n_components_max, svd_solver="randomized",
+                          random_state=42)
+                X_reduced = pca.fit_transform(X)
+                cumsum = np.cumsum(pca.explained_variance_ratio_)
+                # 99% variance for time-series (vs 95% default) — more signal preserved
+                n_keep = min(int(np.searchsorted(cumsum, 0.99) + 1), len(cumsum))
+                n_keep = max(n_keep, min(16, len(cumsum)))
+                if n_keep < X_reduced.shape[1]:
+                    X_reduced = X_reduced[:, :n_keep]
+
+                trace.append(
+                    f"【时序路由】PCA {n_features}D → {n_keep}D"
+                    f"（保留 {cumsum[n_keep - 1]:.1%} 方差，"
+                    f"原时序形状 {_ts_T}×{_ts_F}）。"
+                )
+
+                # Build updated metadata: keep is_time_series but clear
+                # ts_shape so experts don't attempt the invalid reshape.
+                _ts_meta = {**(_meta or {}),
+                            "preprocessing": "pca_highdim_ts",
+                            "is_time_series": True,
+                            "ts_shape": None,
+                            "ts_shape_original": [_ts_T, _ts_F]}
+                return DatasetBundle(
+                    name=f"{dataset.name}_pca{n_keep}_ts",
+                    display_name=f"{dataset.display_name} (PCA{n_keep})",
+                    X=X_reduced.astype(float),
+                    y=dataset.y,
+                    description=f"PCA-reduced from {n_features}D to {n_keep}D (99% variance, time-series).",
+                    shape_family=dataset.shape_family,
+                    feature_names=[f"PC{i + 1}" for i in range(n_keep)],
+                    metadata=_ts_meta,
+                )
+
             # Single PCA fit: randomized solver, capped at 100 components
-            n_components_max = min(100, n_features, n_samples - 1)
+            n_components_max = min(200, n_features, n_samples - 1)
 
             if n_samples > 5000:
                 # Fit on a random subset for speed, transform all data
@@ -2197,6 +2470,8 @@ class ACESupervisor:
         trace: list[str],
         centroid_ban: set[str] | None = None,
         blocked_algorithms: list[str] | None = None,
+        *,
+        modality: ModalityProfile | None = None,
     ) -> list[AlgorithmRunResult]:
         """Rank results.  When ground-truth labels exist, **ARI is the sole
         ranking criterion** — internal metrics (Silhouette, Edge Cut,
@@ -2217,9 +2492,33 @@ class ACESupervisor:
         has_labels = y_true is not None
 
         if not has_labels:
+            # Modality-aware internal scoring: recompute Silhouette with the
+            # correct distance metric so ranking is valid for text/cosine and
+            # time_series data (not just tabular/euclidean).
+            _metric = modality.distance_metric if modality is not None else "euclidean"
+            if _metric != "euclidean":
+                trace.append(
+                    f"【无标签排名】使用 metric='{_metric}' 重新计算 Silhouette"
+                    f"（非默认欧氏距离）。"
+                )
+            X = dataset.X
+            for r in all_results:
+                _lbl = getattr(r, "labels", None)
+                if _lbl is not None and hasattr(_lbl, "__len__") and len(_lbl) > 0:
+                    try:
+                        from sklearn.metrics import silhouette_score
+
+                        _lbl_arr = np.asarray(_lbl, dtype=int).ravel()
+                        if len(set(_lbl_arr)) > 1:
+                            _sil = float(silhouette_score(X, _lbl_arr, metric=_metric))
+                            r.metrics["score"] = _sil
+                            r.metrics["silhouette"] = _sil
+                            r.metrics["silhouette_metric"] = _metric
+                    except Exception:
+                        pass  # keep the expert-computed score on failure
             return sorted(
                 all_results,
-                key=lambda r: r.metrics.get("score", 0.0),
+                key=lambda r: r.metrics.get("score") or 0.0,
                 reverse=True,
             )
 

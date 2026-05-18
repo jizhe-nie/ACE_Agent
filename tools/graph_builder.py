@@ -38,6 +38,7 @@ class GraphBuilder:
         *,
         mutual: bool = True,
         mode: str = "distance",
+        metric: str = "euclidean",
     ) -> csr_matrix:
         """Build kNN graph adjacency.
 
@@ -49,11 +50,13 @@ class GraphBuilder:
         mutual: when True, only keep edges where both endpoints are mutual
                 neighbours (undirected, no one-way edges).
         mode: ``"distance"`` for weighted, ``"connectivity"`` for binary.
+        metric: distance metric passed to ``kneighbors_graph``.
+           ``"euclidean"`` (default), ``"cosine"``, etc.
         """
         n = X.shape[0]
         if k is None:
             k = min(30, max(5, int(np.sqrt(n))))
-        adj: csr_matrix = kneighbors_graph(X, k, mode=mode, include_self=False)
+        adj: csr_matrix = kneighbors_graph(X, k, mode=mode, include_self=False, metric=metric)
         if mutual:
             adj = adj.minimum(adj.T)  # element-wise min keeps only mutual edges
         return adj
@@ -64,6 +67,7 @@ class GraphBuilder:
         radius: float | None = None,
         *,
         mode: str = "distance",
+        metric: str = "euclidean",
     ) -> csr_matrix:
         """Build radius-neighbours graph.
 
@@ -71,11 +75,11 @@ class GraphBuilder:
         """
         n = X.shape[0]
         if radius is None:
-            knn = NearestNeighbors(n_neighbors=min(15, n - 1)).fit(X)
+            knn = NearestNeighbors(n_neighbors=min(15, n - 1), metric=metric).fit(X)
             dists, _ = knn.kneighbors(X)
             radius = float(np.mean(dists[:, -1]))
         from sklearn.neighbors import radius_neighbors_graph
-        return radius_neighbors_graph(X, radius, mode=mode, include_self=False)
+        return radius_neighbors_graph(X, radius, mode=mode, include_self=False, metric=metric)
 
     @staticmethod
     def sparsify(
@@ -1184,6 +1188,7 @@ class GraphBuilder:
         mutual: bool = True,
         jaccard_threshold: float = 0.1,
         random_state: int = 42,
+        metric: str = "euclidean",
     ) -> spmatrix:
         """Build a kNN graph weighted by shared-neighbor Jaccard similarity.
 
@@ -1200,7 +1205,7 @@ class GraphBuilder:
             k = min(30, max(5, int(np.sqrt(n))))
 
         # Build initial mutual kNN
-        adj = GraphBuilder.build_knn_graph(X, k=k, mutual=mutual, mode="connectivity")
+        adj = GraphBuilder.build_knn_graph(X, k=k, mutual=mutual, mode="connectivity", metric=metric)
 
         # Compute Jaccard weights
         jaccard = GraphBuilder.compute_shared_neighbor_similarity(adj, k=k)
@@ -1218,6 +1223,8 @@ class GraphBuilder:
     def compute_adaptive_bandwidth(
         X: np.ndarray,
         k: int | None = None,
+        *,
+        metric: str = "euclidean",
     ) -> np.ndarray:
         """Compute local scaling factor σ_i for each point.
 
@@ -1232,7 +1239,7 @@ class GraphBuilder:
         if k is None:
             k = min(15, max(5, n // 20))
 
-        nn = NearestNeighbors(n_neighbors=min(k + 1, n), metric="euclidean")
+        nn = NearestNeighbors(n_neighbors=min(k + 1, n), metric=metric)
         nn.fit(X)
         dists, _ = nn.kneighbors(X)
         # dists[:, -1] is distance to k-th neighbor (excluding self for k+1)
@@ -1246,6 +1253,7 @@ class GraphBuilder:
         k: int | None = None,
         *,
         mutual: bool = True,
+        metric: str = "euclidean",
     ) -> spmatrix:
         """Build kNN graph with adaptive local scaling edge weights.
 
@@ -1263,10 +1271,10 @@ class GraphBuilder:
         if k is None:
             k = min(30, max(5, int(np.sqrt(n))))
 
-        sigma = GraphBuilder.compute_adaptive_bandwidth(X, k)
+        sigma = GraphBuilder.compute_adaptive_bandwidth(X, k, metric=metric)
 
         # Get distance-weighted kNN
-        adj = kneighbors_graph(X, min(k, n - 1), mode="distance", include_self=False)
+        adj = kneighbors_graph(X, min(k, n - 1), mode="distance", include_self=False, metric=metric)
         if mutual:
             adj = adj.minimum(adj.T)
 
@@ -1290,6 +1298,7 @@ class GraphBuilder:
         *,
         min_k: int = 5,
         max_k: int = 50,
+        metric: str = "euclidean",
     ) -> np.ndarray:
         """Compute per-point adaptive neighborhood size.
 
@@ -1306,7 +1315,7 @@ class GraphBuilder:
 
         n = X.shape[0]
         k_use = min(base_k + 1, n)
-        nn = NearestNeighbors(n_neighbors=k_use, metric="euclidean")
+        nn = NearestNeighbors(n_neighbors=k_use, metric=metric)
         nn.fit(X)
         dists, _ = nn.kneighbors(X)
         # Mean distance to base_k neighbors (excluding self)
@@ -1329,6 +1338,7 @@ class GraphBuilder:
         base_k: int = 15,
         *,
         mutual: bool = True,
+        metric: str = "euclidean",
     ) -> spmatrix:
         """Build variable-k kNN graph with per-point adaptive neighborhood size.
 
@@ -1339,11 +1349,11 @@ class GraphBuilder:
         from sklearn.neighbors import NearestNeighbors
 
         n = X.shape[0]
-        per_point_k = GraphBuilder.compute_adaptive_k(X, base_k=base_k)
+        per_point_k = GraphBuilder.compute_adaptive_k(X, base_k=base_k, metric=metric)
         max_k = per_point_k.max()
 
         # Get max_k neighbors for all points, then truncate per-point
-        nn = NearestNeighbors(n_neighbors=min(max_k + 1, n), metric="euclidean")
+        nn = NearestNeighbors(n_neighbors=min(max_k + 1, n), metric=metric)
         nn.fit(X)
         dists, indices = nn.kneighbors(X)
 
@@ -1647,6 +1657,8 @@ class GraphBuilder:
     def compute_graph_quality_metrics(
         X: np.ndarray,
         adjacency: spmatrix,
+        *,
+        metric: str = "euclidean",
     ) -> dict[str, Any]:
         """Comprehensive graph construction quality audit.
 
@@ -1714,7 +1726,7 @@ class GraphBuilder:
         if n <= 2000:
             try:
                 from sklearn.neighbors import NearestNeighbors
-                nn = NearestNeighbors(n_neighbors=min(15, n - 1))
+                nn = NearestNeighbors(n_neighbors=min(15, n - 1), metric=metric)
                 nn.fit(X)
                 euc_dists, euc_idx = nn.kneighbors(X)
                 local_euc = euc_dists[:, 1:].mean()
@@ -1799,6 +1811,7 @@ class GraphBuilder:
         shortcut_prune_ratio: float = 0.15,
         sparsify_keep: float = 0.70,
         random_state: int = 42,
+        metric: str = "euclidean",
     ) -> tuple[spmatrix, dict[str, Any]]:
         """Build a wall-aware graph — THE primary graph construction pipeline.
 
@@ -1831,12 +1844,12 @@ class GraphBuilder:
         # ---- Stage 1: Adaptive scaling mutual kNN ----
         if use_adaptive_scaling:
             adj = GraphBuilder.build_adaptive_scaling_graph(
-                X, k=base_k, mutual=mutual,
+                X, k=base_k, mutual=mutual, metric=metric,
             )
             build_report["stages"].append("adaptive_scaling")
         else:
             adj = GraphBuilder.build_knn_graph(
-                X, k=base_k, mutual=mutual, mode="distance",
+                X, k=base_k, mutual=mutual, mode="distance", metric=metric,
             )
             build_report["stages"].append("basic_knn")
 

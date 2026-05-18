@@ -223,10 +223,18 @@ def _build_core_pre_inject() -> dict[str, Any]:
     modules: dict[str, Any] = {}
     # --- pre-processing ---
     try:
-        from sklearn.preprocessing import StandardScaler, MinMaxScaler  # noqa: F811
+        from sklearn.preprocessing import StandardScaler, MinMaxScaler, normalize  # noqa: F811
 
         modules["StandardScaler"] = StandardScaler
         modules["MinMaxScaler"] = MinMaxScaler
+        modules["normalize"] = normalize
+    except Exception:
+        pass
+    # --- cosine / pairwise distances (essential for text/sparse data) ---
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity  # noqa: F811
+
+        modules["cosine_similarity"] = cosine_similarity
     except Exception:
         pass
     # --- decomposition ---
@@ -234,6 +242,32 @@ def _build_core_pre_inject() -> dict[str, Any]:
         from sklearn.decomposition import PCA  # noqa: F811
 
         modules["PCA"] = PCA
+    except Exception:
+        pass
+    # --- manifold / dim-reduction ---
+    try:
+        from umap import UMAP  # noqa: F811
+        modules["UMAP"] = UMAP
+    except Exception:
+        pass
+    try:
+        from sklearn.manifold import (  # noqa: F811
+            TSNE,
+            Isomap,
+            MDS,
+            LocallyLinearEmbedding,
+            SpectralEmbedding,
+        )
+        modules["TSNE"] = TSNE
+        modules["Isomap"] = Isomap
+        modules["MDS"] = MDS
+        modules["LocallyLinearEmbedding"] = LocallyLinearEmbedding
+        modules["SpectralEmbedding"] = SpectralEmbedding
+    except Exception:
+        pass
+    try:
+        from sklearn.decomposition import TruncatedSVD  # noqa: F811
+        modules["TruncatedSVD"] = TruncatedSVD
     except Exception:
         pass
     # --- clustering ---
@@ -290,16 +324,47 @@ def _build_core_pre_inject() -> dict[str, Any]:
         pass
     # --- density / topology algorithms (Critic bootstrap stability needs these) ---
     try:
-        from sklearn.cluster import DBSCAN, OPTICS, SpectralClustering, AgglomerativeClustering  # noqa: F811
+        from sklearn.cluster import DBSCAN, OPTICS, AgglomerativeClustering  # noqa: F811
+        from sklearn.cluster import SpectralClustering as _SpectralClustering
+
+        class _SafeSpectralClustering(_SpectralClustering):
+            """Wrapper that prevents scipy 'k >= N' error by capping n_clusters.
+
+            When the affinity matrix is sparse, scipy eigsh requires k < N.
+            LLM-generated code often sets n_clusters too high for sub-sampled
+            data, causing::
+
+                TypeError: Cannot use scipy.linalg.eigh for sparse A with k >= N
+
+            This wrapper silently caps n_clusters to max(2, n_samples - 1) at
+            fit time, which is always safe.
+            """
+            def fit(self, X, y=None):
+                n_samples = X.shape[0] if hasattr(X, 'shape') else len(X)
+                safe_k = max(2, n_samples - 1)
+                if self.n_clusters > safe_k:
+                    self.n_clusters = safe_k
+                return super().fit(X, y)
+
         modules["DBSCAN"] = DBSCAN
         modules["OPTICS"] = OPTICS
-        modules["SpectralClustering"] = SpectralClustering
+        modules["SpectralClustering"] = _SafeSpectralClustering
         modules["AgglomerativeClustering"] = AgglomerativeClustering
     except Exception:
         pass
     try:
         from sklearn.cluster import HDBSCAN  # noqa: F811
         modules["HDBSCAN"] = HDBSCAN
+    except Exception:
+        pass
+    # --- time-series clustering (DTW via tslearn) ---
+    try:
+        from tslearn.clustering import TimeSeriesKMeans  # noqa: F811
+
+        modules["TimeSeriesKMeans"] = TimeSeriesKMeans
+        # Also expose tslearn.metrics.dtw for pairwise distance computation
+        import tslearn.metrics as _ts_metrics  # noqa: F811
+        modules["tslearn_metrics"] = _ts_metrics
     except Exception:
         pass
     # --- model selection (Critic stratified sampling) ---
