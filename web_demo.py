@@ -470,6 +470,19 @@ def main() -> None:
                     detected_type = upload_analysis.get("detected_type", "tabular")
                     recs = upload_analysis.get("recommendations", [])
 
+                    # Time-series detection (from companion .meta.json)
+                    _ts_meta = (preview_ds_early.metadata or {})
+                    if _ts_meta.get("is_time_series") and _ts_meta.get("ts_shape"):
+                        _ts_T, _ts_F = _ts_meta["ts_shape"]
+                        _ts_desc = _ts_meta.get("ts_description", "")
+                        st.info(
+                            f"🔍 检测到时序数据: **{_ts_T} 时间步 × {_ts_F} 特征**"
+                            f"（展平 {_ts_T * _ts_F}D，{ns} 样本）\n\n"
+                            f"将自动跳过 PCA、启用 DTW 距离度量。"
+                            f"专家可使用 `TimeSeriesKMeans(metric='dtw')` 进行聚类。"
+                            + (f"\n\n{_ts_desc}" if _ts_desc else "")
+                        )
+
                     if recs:
                         # Show recommendations as a small card
                         if detected_type == "image":
@@ -634,12 +647,23 @@ def _render_messages() -> None:
 
 @st.cache_data(max_entries=5)
 def _cached_load_custom(file_bytes: bytes, file_name: str):  # type: ignore[return]
+    import shutil
     import tempfile
 
     suffix = Path(file_name).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
+
+    # Streamlit copies uploads to a temp directory, but companion files
+    # (e.g. heart_sounds_ready.meta.json) live in CWD.  Copy them alongside
+    # the temp CSV so load_custom_dataset can detect is_time_series etc.
+    _meta_name = Path(file_name).with_suffix(".meta.json")
+    _cwd_meta = Path.cwd() / _meta_name
+    _tmp_meta = Path(tmp_path).with_suffix(".meta.json")
+    if _cwd_meta.exists():
+        shutil.copy2(_cwd_meta, _tmp_meta)
+
     try:
         ds = load_custom_dataset(tmp_path)
         ds.display_name = f"上传: {file_name}"
@@ -647,6 +671,8 @@ def _cached_load_custom(file_bytes: bytes, file_name: str):  # type: ignore[retu
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+        if _tmp_meta.exists():
+            _tmp_meta.unlink()
 
 
 @st.cache_resource
@@ -817,6 +843,30 @@ def _handle_prompt(
         if report.response_type == "CLUSTER_TASK":
             _render_report(report)
             _render_hitl_panel(report, supervisor, dataset, prompt, settings)
+            # ---- Export clustering result ---------------------------------
+            _best = report.ranking[0] if report.ranking else None
+            if _best is not None and hasattr(_best, "labels"):
+                _y_true = dataset.y
+                _has_labels = _y_true is not None and len(_y_true) == len(_best.labels)
+                _lines = []
+                _header = "sample_index,cluster_label"
+                if _has_labels:
+                    _header += ",true_label"
+                _lines.append(_header)
+                for _i, _lbl in enumerate(_best.labels):
+                    _row = f"{_i},{int(_lbl)}"
+                    if _has_labels:
+                        _row += f",{int(_y_true[_i])}"
+                    _lines.append(_row)
+                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _fname = f"cluster_labels_{_best.algorithm_name}_{_ts}.csv"
+                st.download_button(
+                    label=f"下载聚类结果 ({_best.algorithm_name}, {len(_best.labels)} 样本)",
+                    data="\n".join(_lines),
+                    file_name=_fname,
+                    mime="text/csv",
+                    use_container_width=True,
+                )
 
     # Strip heavy data from report for session state storage
     # Use SessionManager's helper to keep memory footprint low
