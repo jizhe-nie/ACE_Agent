@@ -21,7 +21,9 @@ class KnowledgeEngine:
     避免启动时一次性加载所有重型库（PyTorch + transformers + model）。
     """
 
-    def __init__(self, db_path: str = "agent_brain/memory_vdb"):
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = str(Path(__file__).resolve().parent / "memory_vdb")
         self.db_path = db_path
         self.manifest_path = Path(db_path) / "ingested_manifest.json"
         self._embed_fn: object | None = None
@@ -63,8 +65,10 @@ class KnowledgeEngine:
             self._collection_ready = False
             return False
 
-    def ingest_docs(self, docs_dir: str = "docs"):
+    def ingest_docs(self, docs_dir: str | None = None):
         """扫描并入库，只处理新文件。模型延迟到首次调用时才加载。"""
+        if docs_dir is None:
+            docs_dir = str(Path(__file__).resolve().parents[1] / "docs")
         docs_path = Path(docs_dir)
         if not docs_path.exists():
             return
