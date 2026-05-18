@@ -1,6 +1,48 @@
+# Python cache
 __pycache__/
 **/__pycache__/
 *.pyc
+
+# Output directories
 outputs/*
 !outputs/.gitkeep
+!outputs/gallery_legacy/.gitkeep
+plots/*
+!plots/.gitkeep
+!plots/heart_sound_demo/
+!plots/heart_sound_demo/*.png
+
+# Session & runtime data
+.ace_sessions.json
+.ace_sessions.json.bak
+.ace_sessions_backup.json
+.ace_result_cache.json
 .ace_demo_config.json
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+_minted/
+
+# Type checker cache
+.mypy_cache/
+
+# Test cache
+.pytest_cache/
+.ruff_cache/
+
+# Environment
+.env
+
+# Benchmark cache (large datasets)
+benchmark_cache/mnist_full_*.npy
+
+# ChromaDB runtime
+agent_brain/memory_vdb/chroma.sqlite3
+
+# IDE
+.vscode/
+.idea/
