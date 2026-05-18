@@ -746,7 +746,13 @@ def dec_pipeline(
 
     if hidden_dims is None:
         if n_features > 256:
-            hidden_dims = [500, 500, 2000]          # DEC paper for MNIST
+            # Proportional to input dimension, capped at DEC-paper sizes.
+            # 784D (MNIST) → [500, 500, 2000]; larger inputs scale up to caps.
+            hidden_dims = [
+                min(500, n_features),
+                min(500, max(128, n_features // 2)),
+                max(64, min(2000, n_features * 2 // 3)),
+            ]
         elif n_features > 128:
             hidden_dims = [256, 128, 64, 32]
         elif n_features > 64:

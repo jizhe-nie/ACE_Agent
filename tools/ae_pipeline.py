@@ -972,7 +972,7 @@ def conv_ae_kmeans_pipeline(
     X_scaled = _scale_data(X, normalize)
 
     if latent_dim <= 0:
-        latent_dim = 32
+        latent_dim = max(16, min(256, (input_size ** 2) // 24))
 
     device = _get_device()
 

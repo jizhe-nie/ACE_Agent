@@ -102,6 +102,9 @@ if _d1.get("active", True):
         _sil1 = float(silhouette_score(_red1, _lbl1))
         _chi1 = float(calinski_harabasz_score(_red1, _lbl1))
         _plot1 = _plot_dim_result(_red1, _lbl1, "PCA + KMeans", f"{_output_base}/pca_kmeans.png")
+        _os.makedirs(_output_base, exist_ok=True)
+        _embed1 = f"{_output_base}/pca_kmeans_embed.npy"
+        _np.save(_embed1, _red1)
         artifacts["PCA_KMeans"] = {
             "labels": _lbl1.tolist(),
             "metrics": {
@@ -110,6 +113,7 @@ if _d1.get("active", True):
                 "n_components": int(_nc1),
             },
             "plot_path": _plot1,
+            "embedding_path": _embed1,
         }
     except Exception as _e1:
         artifacts["PCA_KMeans_error"] = {
@@ -129,6 +133,9 @@ if _d2.get("active", True):
         _sil2 = float(silhouette_score(_red2, _lbl2))
         _chi2 = float(calinski_harabasz_score(_red2, _lbl2))
         _plot2 = _plot_dim_result(_red2, _lbl2, "PCA + GMM", f"{_output_base}/pca_gmm.png")
+        _os.makedirs(_output_base, exist_ok=True)
+        _embed2 = f"{_output_base}/pca_gmm_embed.npy"
+        _np.save(_embed2, _red2)
         artifacts["PCA_GMM"] = {
             "labels": _lbl2.tolist(),
             "metrics": {
@@ -137,6 +144,7 @@ if _d2.get("active", True):
                 "n_components": int(_nc2),
             },
             "plot_path": _plot2,
+            "embedding_path": _embed2,
         }
     except Exception as _e2:
         artifacts["PCA_GMM_error"] = {
@@ -163,6 +171,9 @@ if _d3.get("active", True) and _UMAP_OK:
         _sil3 = float(silhouette_score(_red3, _lbl3))
         _chi3 = float(calinski_harabasz_score(_red3, _lbl3))
         _plot3 = _plot_dim_result(_red3, _lbl3, "UMAP + KMeans", f"{_output_base}/umap_kmeans.png")
+        _os.makedirs(_output_base, exist_ok=True)
+        _embed3 = f"{_output_base}/umap_kmeans_embed.npy"
+        _np.save(_embed3, _red3)
         artifacts["UMAP_KMeans"] = {
             "labels": _lbl3.tolist(),
             "metrics": {
@@ -171,6 +182,7 @@ if _d3.get("active", True) and _UMAP_OK:
                 "n_components": int(_nc3),
             },
             "plot_path": _plot3,
+            "embedding_path": _embed3,
         }
     except Exception as _e3:
         artifacts["UMAP_KMeans_error"] = {
@@ -197,6 +209,9 @@ if _d4.get("active", True) and _TSNE_OK and _n <= 5000:
     _sil4 = float(silhouette_score(_red4, _lbl4))
     _chi4 = float(calinski_harabasz_score(_red4, _lbl4))
     _plot4 = _plot_dim_result(_red4, _lbl4, "t-SNE + KMeans", f"{_output_base}/tsne_kmeans.png")
+    _os.makedirs(_output_base, exist_ok=True)
+    _embed4 = f"{_output_base}/tsne_kmeans_embed.npy"
+    _np.save(_embed4, _red4)
     artifacts["tSNE_KMeans"] = {
         "labels": _lbl4.tolist(),
         "metrics": {
@@ -205,6 +220,7 @@ if _d4.get("active", True) and _TSNE_OK and _n <= 5000:
             "n_components": 2,
         },
         "plot_path": _plot4,
+        "embedding_path": _embed4,
     }
 
 # ========================================================================

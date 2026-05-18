@@ -193,7 +193,7 @@ def load_from_npy(
         y=y.astype(np.int64) if y is not None else None,
         display_name=display_name,
         description=description or f"Pre-extracted features: {fp.name}",
-        shape_family="image_features",
+        shape_family="spherical",
         metadata=metadata,
     )
 
