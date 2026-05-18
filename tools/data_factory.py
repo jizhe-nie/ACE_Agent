@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import urllib.request
 from pathlib import Path
@@ -131,6 +132,11 @@ def _decompose_image_shape(n_features: int) -> tuple[int, int, int] | None:
     Only triggers for plausible image dimensions: n_features ≥ 256 (≈16×16)
     and each spatial dimension ≥ 8.
     """
+    # Common image dimensions in ML datasets.  Non-standard sizes (like 42 or 63)
+    # are vanishingly rare as image datasets but common for flattened spectrograms
+    # and other structured features that happen to factor into H×W×C.
+    _STD_DIMS = frozenset({8, 16, 28, 32, 64, 96, 112, 128, 224, 256, 299, 384, 512})
+
     if n_features < 256:
         return None
     for channels in (3, 1):
@@ -141,8 +147,15 @@ def _decompose_image_shape(n_features: int) -> tuple[int, int, int] | None:
         for h in range(max(8, root - 8), root + 9):
             if n_flat % h == 0:
                 w = n_flat // h
-                if 8 <= w <= 2048 and 0.2 <= h / w <= 5.0:
-                    return (h, w, channels)
+                if not (8 <= w <= 2048 and 0.2 <= h / w <= 5.0):
+                    continue
+                # For high-dim data (> 3000 features), require both spatial
+                # dims to be standard image sizes.  Without this guard, numbers
+                # like 4032 (=32×42×3) are falsely classified as images when
+                # they are actually flattened 64×63 mel spectrograms.
+                if n_features > 3000 and (h not in _STD_DIMS or w not in _STD_DIMS):
+                    continue
+                return (h, w, channels)
     return None
 
 
@@ -203,32 +216,49 @@ def _analyze_uploaded_data(
     # 1. Image detection from feature dimensions
     img_shape = _decompose_image_shape(n_features)
     if img_shape:
-        h, w, c = img_shape
-        result["detected_type"] = "image"
-        result["image_shape"] = img_shape
-        if c == 1:
-            size_str = f"{h}×{w} (灰度)"
-        else:
-            size_str = f"{h}×{w}×{c} (RGB)"
-        result["recommendations"].append({
-            "mode": "cnn_features",
-            "label": f"提取 CNN 特征后聚类 ({size_str})",
-            "reason": (
-                f"检测到图像数据 {size_str}，"
-                f"原始像素空间的欧氏距离不承载语义信息。"
-                f"建议使用预训练 CNN 提取语义特征后再聚类。"
-            ),
-            "priority": "strongly_recommended",
-        })
-        result["recommendations"].append({
-            "mode": "raw_pixels",
-            "label": f"直接使用原始像素聚类 ({n_features}D) ⚠️",
-            "reason": (
-                "像素空间聚类在 ≥10D 时失效——类内散度远大于类间差异。"
-                "保留此选项仅用于对比验证。"
-            ),
-            "priority": "not_recommended",
-        })
+        # Validate that values look like pixel data (non-negative, plausible range).
+        # Mel spectrograms, PCA embeddings, and other structured features can
+        # coincidentally factor into H×W×C, but their value ranges give them away.
+        _values_look_like_pixels = True
+        try:
+            _sample = np.asarray(X[: min(200, n_samples)], dtype=float)
+            _vmin, _vmax = float(np.nanmin(_sample)), float(np.nanmax(_sample))
+            # Pixel image data is non-negative and typically in [0, 255] or [0, 1].
+            # Negative, very large, or non-integer values → not pixel data.
+            if (_vmin < -0.01
+                    or _vmax > 300
+                    or (_vmax > 10 and not np.allclose(_sample, np.round(_sample)))):
+                _values_look_like_pixels = False
+        except Exception:
+            pass
+
+        if _values_look_like_pixels:
+            h, w, c = img_shape
+            result["detected_type"] = "image"
+            result["image_shape"] = img_shape
+            if c == 1:
+                size_str = f"{h}×{w} (灰度)"
+            else:
+                size_str = f"{h}×{w}×{c} (RGB)"
+            result["recommendations"].append({
+                "mode": "cnn_features",
+                "label": f"提取 CNN 特征后聚类 ({size_str})",
+                "reason": (
+                    f"检测到图像数据 {size_str}，"
+                    f"原始像素空间的欧氏距离不承载语义信息。"
+                    f"建议使用预训练 CNN 提取语义特征后再聚类。"
+                ),
+                "priority": "strongly_recommended",
+            })
+            result["recommendations"].append({
+                "mode": "raw_pixels",
+                "label": f"直接使用原始像素聚类 ({n_features}D) ⚠️",
+                "reason": (
+                    "像素空间聚类在 ≥10D 时失效——类内散度远大于类间差异。"
+                    "保留此选项仅用于对比验证。"
+                ),
+                "priority": "not_recommended",
+            })
 
     # 2. Extreme high-dim warning
     if n_features > 500 and not img_shape:
@@ -398,6 +428,16 @@ def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
         if expected_clusters < 2:
             expected_clusters = None
 
+    # Load companion metadata if present (e.g. from convert_friend_data.py)
+    _meta_path = path.with_suffix('.meta.json')
+    _companion_meta = {}
+    if _meta_path.exists():
+        try:
+            _companion_meta = json.loads(_meta_path.read_text(encoding='utf-8'))
+            logger.info(f"已加载伴生元数据: {_meta_path}")
+        except Exception:
+            pass
+
     meta = {
         "file_path": str(path),
         "original_columns": df.columns.tolist(),
@@ -405,6 +445,8 @@ def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
         "source": "custom_upload",
         "n_samples": n_samples,
     }
+    # Merge companion metadata (is_time_series, ts_shape, etc.)
+    meta.update(_companion_meta)
     if original_shape:
         meta["original_shape"] = original_shape
     if expected_clusters is not None:
@@ -424,43 +466,6 @@ def load_custom_dataset(file_path: str | Path) -> DatasetBundle:
         feature_names=feature_names,
         metadata=meta,
     )
-
-
-def infer_dataset_from_prompt(prompt: str) -> str | None:
-    normalized = prompt.lower()
-    mapping = {
-        "blobs": ["blob", "blobs", "球形", "高斯团", "簇团"],
-        "moons": ["moon", "moons", "双月", "月牙"],
-        "s_curve": ["s-curve", "s curve", "s形", "scurve", "流形"],
-        "smile": ["smile", "smiley", "笑脸", "笑脸数据"],
-        "high_dim": ["high_dim", "high dim", "高维", "多维", "高维度"],
-        "multi_view": ["multi_view", "multi view", "多视图模拟"],
-        "iris": ["iris", "鸢尾花", "经典数据"],
-        "wine": ["wine", "葡萄酒", "酒"],
-        "pendigits": ["pendigits", "pen digit", "笔迹", "手写笔迹"],
-        "digits": ["digits", "手写数字特征", "optdigits"],
-        "letter": ["letter", "字母识别", "字符识别"],
-        "mnist": ["mnist", "原始手写体", "图像聚类"],
-        "mnist_full": ["mnist full", "mnist_full", "完整mnist", "手写数字全集"],
-        "fashion_mnist": ["fashion", "fashion_mnist", "fashion-mnist", "时尚"],
-        "usps": ["usps", "手写数字", "邮政"],
-        "reuters": ["reuters", "路透社", "文本", "reuter"],
-        "har": ["har", "人体活动", "活动识别", "传感器", "加速度"],
-        "news": ["news", "newsgroups", "文本聚类", "20news"],
-        "mfeat": ["mfeat", "multi-feature", "真实多视图", "多特征"],
-        "pathbased": ["pathbased", "path-based", "path based", "环形", "缺口"],
-        "square": ["square", "squares", "nested square", "嵌套方形", "方块"],
-        "spiral_sipu": ["spiral", "螺旋", "螺旋线"],
-        "half_kernel": ["half-kernel", "half_kernel", "parable", "抛物线", "边界"],
-        "cifar10_gap": ["cifar10 gap", "cifar10_gap", "cifar gap"],
-        "cifar10_resnet": ["cifar10 resnet", "cifar10_resnet", "cifar resnet"],
-        "cifar10_raw": ["cifar10 raw", "cifar10_raw", "cifar raw", "cifar10", "cifar"],
-        "coil20": ["coil20", "coil-20", "coil 20", "物体识别", "obj"],
-    }
-    for dataset_name, keywords in mapping.items():
-        if any(keyword in normalized for keyword in keywords):
-            return dataset_name
-    return None
 
 
 def list_demo_datasets() -> list[str]:
@@ -676,7 +681,7 @@ def _load_mfeat_dataset() -> DatasetBundle:
         X=X.astype(float),
         y=y.astype(int),
         description="UCI 真实多视图手写体数据集。View1: 傅里叶, View2: 轮廓, View3: K-L 系数。",
-        shape_family="multi_view",
+        shape_family="manifold",
         feature_names=feature_names,
         metadata={"expected_clusters": 10, "view_dims": [df.shape[1] for df in dfs]},
     )
@@ -930,9 +935,11 @@ def _load_reuters() -> DatasetBundle:
         for fid in fileids:
             cat_set = set(_reuters.categories(fid))
             matched = [c for c in target_cats if c in cat_set]
-            if matched:
+            if len(matched) == 1:
                 docs.append(" ".join(_reuters.words(fid)))
                 labels.append(target_cats.index(matched[0]))
+        logger.info("Reuters 单标签过滤: %d 文档保留, %d 多标签文档已排除",
+                    len(docs), len(fileids) - len(docs))
     except Exception:
         logger.warning("NLTK Reuters 加载失败，尝试 sklearn fetch_openml 回退...")
         openml_attempts = [
@@ -1008,10 +1015,11 @@ def _load_reuters() -> DatasetBundle:
         display_name=DATASET_LABELS["reuters"],
         X=X.astype(float),
         y=y,
-        description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，~10000 样本，4 类。",
+        description="Reuters-21578 文本聚类：~2000 维 TF-IDF 特征，4 类（仅单标签文档）。",
         shape_family="sparse",
         feature_names=vectorizer.get_feature_names_out().tolist(),
-        metadata={"expected_clusters": 4, "source": "NLTK/Reuters", "n_samples": len(X)},
+        metadata={"expected_clusters": 4, "source": "NLTK/Reuters", "n_samples": len(X),
+                  "is_text": True},
     )
 
 
