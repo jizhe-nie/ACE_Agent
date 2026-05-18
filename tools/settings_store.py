@@ -81,7 +81,8 @@ class SettingsStore:
 
     def save(self, payload: dict):
         self._cache.update(payload)
-        self.path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        with contextlib.suppress(OSError):
+            self.path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class SessionManager:
@@ -161,26 +162,35 @@ class SessionManager:
         if len(self.sessions) > self._MAX_SESSIONS:
             self.sessions = self.sessions[: self._MAX_SESSIONS]
 
-        self.path.write_text(
-            json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        # Post-write safety valve: if the file still grew beyond limit,
-        # aggressively trim and re-write.
-        _written_mb = self.path.stat().st_size / (1024 * 1024)
-        if _written_mb > self._MAX_FILE_MB:
-            _keep = max(3, self._MAX_SESSIONS // 2)
-            self.sessions = self.sessions[:_keep]
+        try:
             self.path.write_text(
                 json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+        except OSError:
+            return  # Session save is best-effort; never crash the main flow
+
+        # Post-write safety valve: if the file still grew beyond limit,
+        # aggressively trim and re-write.
+        try:
+            _written_mb = self.path.stat().st_size / (1024 * 1024)
+        except OSError:
+            return
+        if _written_mb > self._MAX_FILE_MB:
+            _keep = max(3, self._MAX_SESSIONS // 2)
+            self.sessions = self.sessions[:_keep]
+            with contextlib.suppress(OSError):
+                self.path.write_text(
+                    json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
 
     def delete_session(self, session_id: str):
         old_len = len(self.sessions)
         self.sessions = [s for s in self.sessions if s["id"] != session_id]
         if len(self.sessions) != old_len:
-            self.path.write_text(
-                json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            with contextlib.suppress(OSError):
+                self.path.write_text(
+                    json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
 
 
 def load_settings() -> dict:

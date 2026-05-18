@@ -178,6 +178,7 @@ class BaseExpert(ABC):
                                         metrics=info.get("metrics", {}),
                                         plot_path=plot_path_obj,
                                         code=_best_code_from_attempts,
+                                        embedding_path=Path(info["embedding_path"]) if info.get("embedding_path") else None,
                                     )
                                 )
                         break  # Stop retrying after rollback
@@ -209,6 +210,7 @@ class BaseExpert(ABC):
                             metrics=info.get("metrics", {}),
                             plot_path=plot_path_obj,
                             code=code,
+                            embedding_path=Path(info["embedding_path"]) if info.get("embedding_path") else None,
                         )
                     )
                 break
