@@ -11,4 +11,7 @@ pytest
 scipy
 python-dotenv
 chromadb
+sentence-transformers
+hdbscan
+pypdf
 
