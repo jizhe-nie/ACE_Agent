@@ -206,7 +206,8 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
             title = s.get("metadata", {}).get("title", s["id"][:8])
             if col1.button(title, key=f"s_{s['id']}", use_container_width=True):
                 st.session_state.current_session_id = s["id"]
-                st.session_state.messages = s["messages"]
+                _full = sm.get_full_session(s["id"])
+                st.session_state.messages = _full if _full is not None else []
                 st.rerun()
             if col2.button("X", key=f"d_{s['id']}"):
                 sm.delete_session(s["id"])
@@ -641,7 +642,9 @@ def _render_messages() -> None:
                         else:
                             st.write(line)
             st.markdown(m["content"])
-            if m.get("report"):
+            if m.get("report_summary"):
+                _render_report_summary(m["report_summary"])
+            elif m.get("report"):
                 _render_report(m["report"])
 
 
@@ -656,13 +659,20 @@ def _cached_load_custom(file_bytes: bytes, file_name: str):  # type: ignore[retu
         tmp_path = tmp.name
 
     # Streamlit copies uploads to a temp directory, but companion files
-    # (e.g. heart_sounds_ready.meta.json) live in CWD.  Copy them alongside
-    # the temp CSV so load_custom_dataset can detect is_time_series etc.
+    # (e.g. heart_sounds_ready.meta.json) live in CWD or data/user_uploads/.
+    # Copy them alongside the temp CSV so load_custom_dataset can detect
+    # is_time_series etc.
     _meta_name = Path(file_name).with_suffix(".meta.json")
     _cwd_meta = Path.cwd() / _meta_name
+    _uploads_meta = Path.cwd() / "data" / "user_uploads" / _meta_name
     _tmp_meta = Path(tmp_path).with_suffix(".meta.json")
+    _source_meta = None
     if _cwd_meta.exists():
-        shutil.copy2(_cwd_meta, _tmp_meta)
+        _source_meta = _cwd_meta
+    elif _uploads_meta.exists():
+        _source_meta = _uploads_meta
+    if _source_meta:
+        shutil.copy2(str(_source_meta), str(_tmp_meta))
 
     try:
         ds = load_custom_dataset(tmp_path)
@@ -730,6 +740,13 @@ def _handle_prompt(
     uploaded_file,  # type: ignore[type-arg]
 ) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
+    # Persist user message immediately so history survives crash / early close
+    _sm = st.session_state.session_manager
+    _sm.save_session(
+        st.session_state.current_session_id,
+        st.session_state.messages,
+        {"title": prompt[:30], "dataset": ds_name or ""},
+    )
     # Lazy init: only create the heavy supervisor when user first runs a task
     if "supervisor" not in st.session_state:
         st.session_state["supervisor"] = _get_supervisor()
@@ -868,16 +885,53 @@ def _handle_prompt(
                     use_container_width=True,
                 )
 
-    # Strip heavy data from report for session state storage
-    # Use SessionManager's helper to keep memory footprint low
-    clean_report = st.session_state.session_manager._strip_heavy_data(report)
+    # Build lightweight report summary for session storage (NOT the full dataclass).
+    # The SupervisorReport dataclass contains AlgorithmRunResult objects with
+    # full labels arrays (potentially 60K+ elements each).  We extract only
+    # ranking text and top-level metrics so session files stay small.
+    _report_summary = None
+    if getattr(report, "response_type", None) == "CLUSTER_TASK":
+        _ranking = getattr(report, "ranking", None) or []
+        _top = _ranking[0] if _ranking else None
+        _best_ari = -1.0
+        _ranking_rows = []
+        for i, item in enumerate(_ranking[:10]):
+            _algo = getattr(item, "algorithm_name", "?")
+            _expert = getattr(item, "expert_label", "")
+            _m = getattr(item, "metrics", {}) or {}
+            _ari = _m.get("ari", -1.0) if isinstance(_m, dict) else -1.0
+            _nmi = _m.get("nmi", 0.0) if isinstance(_m, dict) else 0.0
+            if _ari is not None and _ari > _best_ari:
+                _best_ari = _ari
+            _ranking_rows.append({
+                "rank": i + 1,
+                "algorithm": _algo,
+                "expert": _expert,
+                "ari": _ari,
+                "nmi": _nmi,
+            })
+        _ds = getattr(report, "dataset", None)
+        _ds_name = getattr(_ds, "display_name", "") if _ds else ""
+        _winner_plot = str(getattr(_top, "plot_path", "")) if _top else ""
+        _dataset_plot = str(getattr(report, "dataset_plot_path", ""))
+        _report_summary = {
+            "dataset_name": _ds_name,
+            "winner_algorithm": getattr(_top, "algorithm_name", "") if _top else "",
+            "winner_ari": _best_ari,
+            "dataset_plot_path": _dataset_plot,
+            "winner_plot_path": _winner_plot,
+            "is_ensemble": (getattr(_top, "algorithm_name", "") if _top else "") == "EnsembleConsensus",
+            "ranking_rows": _ranking_rows,
+            "summary": (getattr(report, "llm_summary", "") or getattr(report, "executive_summary", ""))[:2000],
+            "n_results": len(getattr(report, "results", []) or []),
+        }
 
     st.session_state.messages.append(
         {
             "role": "assistant",
             "content": report.llm_summary or report.executive_summary,
             "thought": thought,
-            "report": clean_report if report.response_type == "CLUSTER_TASK" else None,
+            "report_summary": _report_summary,
         }
     )
     st.session_state.session_manager.save_session(
@@ -1000,6 +1054,73 @@ def _render_ensemble_metrics(top) -> None:
     plt.close(fig)
 
 
+def _render_report_summary(s: dict) -> None:
+    """Render from a lightweight report summary dict (new format, low memory)."""
+    ranking = s.get("ranking_rows", [])
+    if not ranking:
+        return
+    st.subheader(f"分析报告: {s.get('dataset_name', '?')}")
+
+    best_ari = s.get("winner_ari", -1.0)
+    top = ranking[0]
+    top_ari = top.get("ari", -1.0) if isinstance(top, dict) else -1.0
+    top_nmi = top.get("nmi", 0.0) if isinstance(top, dict) else 0.0
+
+    c = st.columns(4)
+    if best_ari >= 0 and best_ari < 0.2:
+        c[0].metric("优胜算法", "None / Attempting Rescue")
+        st.error(
+            f"### NO VALID CLUSTERS\n\n"
+            f"数据最强 ARI 仅 **{best_ari:.4f}** (< 0.2)，"
+            f"所有算法结果接近随机分配。"
+        )
+    else:
+        c[0].metric("优胜算法", top.get("algorithm", "?"))
+    c[1].metric("ARI", f"{best_ari:.3f}" if best_ari >= 0 else "N/A")
+    c[2].metric("NMI", f"{top_nmi:.3f}")
+    c[3].metric("评分", f"{best_ari:.3f}")
+
+    if len(ranking) > 1:
+        st.markdown("### 算法排名")
+        rows = []
+        for item in ranking:
+            if not isinstance(item, dict):
+                continue
+            ari_v = item.get("ari", -1.0)
+            rows.append({
+                "排名": item.get("rank", "?"),
+                "算法": item.get("algorithm", "?"),
+                "ARI": f"{float(ari_v):.4f}" if ari_v is not None and ari_v >= 0 else "N/A",
+                "NMI": f"{float(item.get('nmi') or 0.0):.4f}" if item.get("nmi") is not None else "N/A",
+                "专家来源": item.get("expert", ""),
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={"排名": st.column_config.NumberColumn(width="small")},
+        )
+
+    _summary_text = s.get("summary", "")
+    if _summary_text:
+        st.write(_summary_text)
+
+    _raw = _safe_plot_path(s.get("dataset_plot_path"))
+    _top = _safe_plot_path(s.get("winner_plot_path"))
+    if _raw or _top:
+        cols = st.columns(2)
+        if _raw:
+            cols[0].image(_raw, caption="原始分布")
+        else:
+            cols[0].warning("原始分布图不可用")
+        if _top:
+            cols[1].image(_top, caption="最优聚类结果")
+        else:
+            cols[1].info("该算法未生成聚类可视化图")
+    else:
+        st.info("可视化图像暂不可用（可能未保存或已过期）")
+
+
 def _render_report(r) -> None:  # type: ignore[type-arg]
     ranking = r.ranking if hasattr(r, "ranking") else r["ranking"]
     if not ranking:
@@ -1020,7 +1141,7 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
 
     algo_name = top.algorithm_name if hasattr(top, "algorithm_name") else top["algorithm_name"]
     top_metrics = top.metrics if hasattr(top, "metrics") else top.get("metrics", {})
-    score = float(top_metrics["score"] if isinstance(top_metrics, dict) else top_metrics["score"])
+    score = float((top_metrics.get("score") if isinstance(top_metrics, dict) else top_metrics["score"]) or 0.0)
 
     c = st.columns(4)
     if best_ari >= 0 and best_ari < 0.2:
@@ -1033,7 +1154,7 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
         )
     else:
         c[0].metric("优胜算法", algo_name)
-    best_nmi = float(top_metrics.get("nmi", 0.0))
+    best_nmi = float(top_metrics.get("nmi") or 0.0)
     c[1].metric("ARI", f"{best_ari:.3f}" if best_ari >= 0 else "N/A")
     c[2].metric("NMI", f"{best_nmi:.3f}")
     c[3].metric("评分", f"{score:.3f}")
@@ -1046,7 +1167,7 @@ def _render_report(r) -> None:  # type: ignore[type-arg]
             algo = item.algorithm_name if hasattr(item, "algorithm_name") else item["algorithm_name"]
             expert = item.expert_label if hasattr(item, "expert_label") else item["expert_label"]
             m = item.metrics if hasattr(item, "metrics") else item["metrics"]
-            s = float(m.get("score", 0))
+            s = float(m.get("score") or 0.0)
             ari_v = m.get("ari", -1.0)
             nmi_v = m.get("nmi", 0.0)
             rows.append({

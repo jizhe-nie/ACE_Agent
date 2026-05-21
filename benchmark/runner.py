@@ -91,14 +91,27 @@ class BenchmarkRunner:
                 )
                 continue
 
-            # Large-dataset awareness: bump sandbox timeout for big data
+            # N×D cost-aware timeout (matching supervisor pre-flight gate)
             n = dataset.X.shape[0]
+            d = dataset.X.shape[1]
             size_tag = "[HUGE]" if n > 50000 else ("[LARGE]" if n > 10000 else "[SMALL]")
-            print(f"  {size_tag} {dataset.display_name}: {n} samples × {dataset.X.shape[1]} features")
-            if n > 10000:
-                adaptive_timeout = min(n // 100, 900)  # 1s per 100 samples, max 900s
+            cost = n * d
+
+            if cost >= 50_000_000:
+                adaptive_timeout = 300
+                print(f"  {size_tag} {dataset.display_name}: {n}×{d} (N×D={cost/1e6:.1f}M — Tier 3, 300s)")
+            elif cost >= 10_000_000:
+                adaptive_timeout = 300
+                print(f"  {size_tag} {dataset.display_name}: {n}×{d} (N×D={cost/1e6:.1f}M — Tier 2, 300s)")
+            elif cost >= 2_000_000:
+                adaptive_timeout = 120
+                print(f"  {size_tag} {dataset.display_name}: {n}×{d} (N×D={cost/1e6:.1f}M — Tier 1, 120s)")
+            elif n > 10000:
+                adaptive_timeout = min(n // 100, 180)
+                print(f"  {size_tag} {dataset.display_name}: {n} samples × {d} features")
             else:
-                adaptive_timeout = 0  # use sandbox default
+                adaptive_timeout = 0
+                print(f"  {size_tag} {dataset.display_name}: {n} samples × {d} features")
 
             prompt = f"请分析 {dataset.display_name} 数据集，运行所有可用算法。"
             for expert_key in experts:
@@ -189,7 +202,7 @@ class BenchmarkRunner:
                     silhouette=ext_metrics["silhouette"],
                     calinski_harabasz=ext_metrics["calinski_harabasz"],
                     davies_bouldin=ext_metrics["davies_bouldin"],
-                    score=float(ar.metrics.get("score", 0.0)),
+                    score=float(ar.metrics.get("score") or 0.0),
                     score_source=str(ar.metrics.get("score_source", "")),
                     retries_used=heal_stats["attempts"],
                     execution_time_ms=elapsed_ms,

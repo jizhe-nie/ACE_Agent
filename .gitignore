@@ -3,14 +3,19 @@ __pycache__/
 **/__pycache__/
 *.pyc
 
+# Stray viz / data output files at project root
+/*.png
+/*.pdf
+/*.npy
+/*.npz
+/KMeans_*.csv
+
 # Output directories
 outputs/*
 !outputs/.gitkeep
-!outputs/gallery_legacy/.gitkeep
+output/*
 plots/*
 !plots/.gitkeep
-!plots/heart_sound_demo/
-!plots/heart_sound_demo/*.png
 
 # Session & runtime data
 .ace_sessions.json

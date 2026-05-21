@@ -12,12 +12,12 @@ from ACE_Agent.tools.llm_client import LLMSettings
 BENCHMARK_SMOKE = ["blobs", "moons", "iris"]  # ~5 min, CI every commit
 BENCHMARK_FULL = [
     "iris", "wine", "digits", "usps", "pendigits", "letter",
-    "har", "reuters", "mnist", "fashion_mnist", "cifar10_raw",
-]  # ~30 min, daily/PR merge
+    "har", "reuters", "news", "mnist", "fashion_mnist", "cifar10_raw",
+]  # ~35 min, daily/PR merge
 BENCHMARK_EXHAUSTIVE = [
     "blobs", "moons", "smile", "s_curve",
     "iris", "wine", "digits", "usps", "pendigits", "letter",
-    "har", "reuters", "mnist", "fashion_mnist",
+    "har", "reuters", "news", "mnist", "fashion_mnist",
     "cifar10_raw", "cifar10_gap", "cifar10_resnet",
     "coil20",
 ]  # ~2 h, release/paper

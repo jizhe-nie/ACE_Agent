@@ -557,7 +557,7 @@ _edge_cut = _edge_cut_score(_adj, _best_labels)
 # ---- visualization: scatter plot of best community partition -------------
 _plot_path = ""
 try:
-    _fig, _ax = plt.subplots(figsize=(7, 5))
+    _fig, _ax = plt.subplots(figsize=(8, 6))
     # Reduce to 2D if high-dimensional
     if _X.shape[1] > 2:
         try:
@@ -585,8 +585,10 @@ try:
                     color=_cmap(_cidx), edgecolors="none")
     _ax.set_title(f"Graph Community: {_best_method} ({_n_communities} communities)")
     _ax.legend(loc="upper right", fontsize=6, ncol=2, markerscale=0.6)
-    _plot_path = "graph_community_result.png"
-    _fig.savefig(_plot_path, dpi=100, bbox_inches="tight")
+    _plot_dir = ACE_OUTPUT_DIR + "/graph" if ACE_OUTPUT_DIR else "outputs/graph"
+    _os.makedirs(_plot_dir, exist_ok=True)
+    _plot_path = f"{_plot_dir}/graph_community_result.png"
+    _fig.savefig(_plot_path, dpi=150, bbox_inches="tight")
     plt.close(_fig)
 except Exception:
     pass

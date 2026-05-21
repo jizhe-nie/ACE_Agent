@@ -63,7 +63,7 @@ def _plot_dim_result(X_2d, labels, title, out_path):
         _Xp = X_2d[:, :2] if X_2d.ndim == 2 and X_2d.shape[1] > 2 else X_2d
         if _Xp.ndim != 2 or _Xp.shape[1] < 2:
             return out_path
-        _fig, _ax = _plt.subplots(figsize=(6, 4))
+        _fig, _ax = _plt.subplots(figsize=(8, 6))
         _unique = _np.unique(labels)
         for _lb in _unique:
             _mask = labels == _lb
@@ -71,13 +71,13 @@ def _plot_dim_result(X_2d, labels, title, out_path):
         _ax.set_title(title)
         _ax.legend(loc="best", fontsize=6)
         _os.makedirs(_os.path.dirname(out_path) if _os.path.dirname(out_path) else ".", exist_ok=True)
-        _fig.savefig(out_path, dpi=80, bbox_inches="tight")
+        _fig.savefig(out_path, dpi=150, bbox_inches="tight")
         _plt.close(_fig)
         return out_path
     except Exception:
         return out_path
 
-_output_base = "outputs/dimension"
+_output_base = ACE_OUTPUT_DIR + "/dimension" if ACE_OUTPUT_DIR else "outputs/dimension"
 
 # ---- scale -------------------------------------------------------------
 _scaler = {SCALER_CLASS}()
@@ -533,7 +533,13 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def _build_smart_defaults(
-    n_features: int, n_samples: int, k: int, is_image: bool = False
+    n_features: int,
+    n_samples: int,
+    k: int,
+    is_image: bool = False,
+    is_text: bool = False,
+    is_time_series: bool = False,
+    dim_reduction_hint: str = "pca",
 ) -> dict[str, Any]:
     """Build sensible defaults when LLM decision fails.
 
@@ -541,6 +547,7 @@ def _build_smart_defaults(
     - Deeper / wider networks for high-dim data
     - Shallower networks + higher dropout for small samples
     - Lower learning rate for deep networks or small datasets
+    - Modality-aware: text→TruncatedSVD preferred, time_series→PCA preferred
     """
     n_comp = min(n_features, max(2, n_features // 3), n_samples // 2)
     latent_dim = min(12, max(2, n_features // 4))
@@ -650,6 +657,16 @@ def _build_smart_defaults(
             },
         }
     }
+    # ---- Modality-aware pipeline adjustments ----------------------------
+    if is_text:
+        # UMAP/t-SNE assume dense Euclidean manifold; sparse TF-IDF violates
+        # this assumption.  Prefer TruncatedSVD (cosine space) instead.
+        result["pipelines"]["umap_kmeans"]["active"] = False
+        result["pipelines"]["tsne_kmeans"]["active"] = False
+    elif is_time_series:
+        # UMAP/t-SNE scramble temporal ordering; keep PCA pipelines only
+        result["pipelines"]["umap_kmeans"]["active"] = False
+        result["pipelines"]["tsne_kmeans"]["active"] = False
     if is_image:
         result["pipelines"]["selflabel"] = {
             "active": n_features > 32,
@@ -731,9 +748,13 @@ class DimensionExpert(BaseExpert):
         n_samples = dataset.X.shape[0]
         k = dataset.metadata.get("expected_clusters", 3) if dataset.metadata else 3
 
-        # 0. Determine dataset type early
-        is_image = bool(dataset.metadata.get("is_image")) if dataset.metadata else False
-        original_shape = dataset.metadata.get("original_shape") if dataset.metadata else None
+        # 0. Determine dataset type early (with ModalityProfile awareness)
+        _md = dataset.metadata if dataset.metadata else {}
+        is_image = bool(_md.get("is_image"))
+        is_text = bool(_md.get("is_text")) or _md.get("modality_type") == "text"
+        is_time_series = bool(_md.get("is_time_series")) or _md.get("modality_type") == "time_series"
+        dim_reduction_hint = _md.get("dim_reduction_hint", "pca")
+        original_shape = _md.get("original_shape")
 
         # 1. Call LLM for pipeline decisions (JSON output)
         small_ds = n_samples < 500
@@ -767,9 +788,24 @@ class DimensionExpert(BaseExpert):
         else:
             dim_category = "常规"
             ae_hint = "n_features<=32，AE 管线不会激活"
+
+        # ---- Modality-specific overrides ------------------------------------
+        if is_text:
+            dim_category = f"文本数据({dim_category})"
+            ae_hint += (
+                " 文本数据优先使用 TruncatedSVD 替代 PCA（稀疏TF-IDF矩阵PCA不稳定），"
+                "降维后推荐用 cosine 距离聚类。"
+            )
+        elif is_time_series:
+            dim_category = f"时序数据({dim_category})"
+            ae_hint += (
+                " 时序特征优先用 PCA 保留全局方差结构，避免 UMAP/t-SNE 破坏时序连续性。"
+            )
+
         user_msg = (
             f"n_samples={n_samples}, n_features={n_features}, expected_clusters={k}。"
             f"数据维度类别: {dim_category}。"
+            f"降维提示: {dim_reduction_hint}。"
             f"AE调参提示: {ae_hint}。"
             f"请输出管线决策 JSON（含 hidden_dims, learning_rate, dropout, noise_std, cluster_method, early_stopping_patience）。"
         )
@@ -781,7 +817,12 @@ class DimensionExpert(BaseExpert):
         # 2. Parse decision (or use smart defaults on failure)
         decisions = _extract_json(raw)
         if not decisions or "pipelines" not in decisions:
-            decisions = _build_smart_defaults(n_features, n_samples, k, is_image)
+            decisions = _build_smart_defaults(
+                n_features, n_samples, k,
+                is_image=is_image, is_text=is_text,
+                is_time_series=is_time_series,
+                dim_reduction_hint=dim_reduction_hint,
+            )
 
         # Smart skip: N > 5000 时自动关闭重管线（除非用户开启深度模式）
         _n = dataset.X.shape[0]

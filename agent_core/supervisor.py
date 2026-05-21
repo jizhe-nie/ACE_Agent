@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -422,6 +423,14 @@ class ACESupervisor:
             if _highdim_result is not None:
                 working_dataset = _highdim_result
 
+        # Inject dim_reduction_hint into working_dataset metadata so
+        # downstream experts (dimension, critic) can use modality-aware defaults
+        _aug_meta = dict(working_dataset.metadata) if working_dataset.metadata else {}
+        _aug_meta["dim_reduction_hint"] = modality.dim_reduction_hint
+        _aug_meta["modality_type"] = modality.modality_type
+        _aug_meta["distance_metric"] = modality.distance_metric
+        working_dataset = replace(working_dataset, metadata=_aug_meta)
+
         # ---- Phase 6: Image-aware routing ---------------------------------
         # When is_image=True and n_features > 500 (raw pixels), Euclidean
         # distance is semantically meaningless.  Activate DimensionExpert
@@ -503,13 +512,50 @@ class ACESupervisor:
                 f"（{_n_samples} 样本，O(N²T) 计算密集）。"
             )
 
-        # ---- Large-sample downsampling (N > 30K) ---------------------------
-        # O(N^2) algorithms (DBSCAN/OPTICS/HDBSCAN in Topology/Zoo experts)
-        # time out on large datasets.  Subsampling before dispatch keeps
-        # experts fast while preserving label distribution.
-        _subsample_result = self._subsample_large_dataset(working_dataset, trace=trace)
-        if _subsample_result is not None:
-            working_dataset = _subsample_result
+        # ---- Pre-flight data-size gate (N×D based) -------------------------
+        # Overrides the N-only timeout above with a cost-aware gating decision
+        # that also forces dimension reduction, blocks O(N²) algorithms, and
+        # triggers aggressive downsampling when needed.
+        _budget = self._compute_data_cost_budget(working_dataset)
+        if _budget["log_message"]:
+            trace.append(_budget["log_message"])
+
+        # Override timeout from cost-budget tier
+        _tier_timeouts = {0: 60, 1: 120, 2: 300}
+        _base_timeout = _tier_timeouts.get(_budget["timeout_tier"], _base_timeout)
+
+        # Hard dimension cap (separate from the variance-based PCA above)
+        if _budget["force_dim_reduce"] and working_dataset.X.shape[1] > _budget["cap_dims"]:
+            _capped = self._apply_hard_dim_reduction(
+                working_dataset, _budget["cap_dims"], trace, modality=modality
+            )
+            if _capped is not None:
+                working_dataset = _capped
+
+        # Cost-driven downsampling (replaces or supplements the N>10K default below)
+        if _budget.get("force_downsample_to"):
+            _sub = self._subsample_large_dataset(
+                working_dataset,
+                max_samples=_budget["force_downsample_to"],
+                trace=trace,
+            )
+            if _sub is not None:
+                working_dataset = _sub
+
+        # Build expert constraints with blocked algorithms
+        _blocked = _budget.get("block_o_n2_algorithms", [])
+        if _blocked:
+            if constraints is None:
+                constraints = {}
+            _existing_blocked = constraints.get("blocked_algorithms", [])
+            constraints["blocked_algorithms"] = list(set(_existing_blocked + _blocked))
+
+        # ---- Large-sample downsampling (fallback, N > 10K) ------------------
+        # Only triggers when the cost-budget gate didn't already downsample.
+        if not _budget.get("force_downsample_to"):
+            _subsample_result = self._subsample_large_dataset(working_dataset, trace=trace)
+            if _subsample_result is not None:
+                working_dataset = _subsample_result
 
         n_experts = len(active_experts)
 
@@ -577,10 +623,11 @@ class ACESupervisor:
 
         for idx, key in enumerate(active_experts):
             expert = self.experts.get(key)
-            # Apply adaptive timeout to this expert's sandbox
+            # Apply adaptive timeout + output_dir to this expert's sandbox
             if expert is not None and hasattr(expert, "sandbox"):
                 with contextlib.suppress(Exception):
                     expert.sandbox.timeout_sec = _base_timeout
+                    expert.sandbox.output_dir = str(output_dir)
             _progress(f"正在运行 {key} 专家 ({idx + 1}/{n_experts})...", idx + 1, n_experts)
             if expert is None:
                 trace.append(f"【主控】警告：专家 '{key}' 未在注册表中找到，跳过。")
@@ -835,7 +882,7 @@ class ACESupervisor:
                         )
                         best = ranking[0]
                         _new_best_ari = self._compute_best_ari(ranking, working_dataset)
-                        _new_best_internal = best.metrics.get("score", 0) if hasattr(best, "metrics") else 0
+                        _new_best_internal = best.metrics.get("score") or 0.0 if hasattr(best, "metrics") else 0.0
                         _ari_display = f"{_new_best_ari:.3f}" if (_new_best_ari is not None and _new_best_ari > 0) else f"internal={_new_best_internal:.3f}"
                         trace.append(
                             f"【Geodesic Pipeline 完成】产出 {len(_deep_results)} 个结果，"
@@ -1089,6 +1136,7 @@ class ACESupervisor:
                 topology_weighting=_topology_mode,
                 diversity_constraints=_diversity,
                 geodesic_distortion=_geodesic,
+                output_dir=output_dir,
             )
             if consensus_result is not None:
                 all_results.append(consensus_result)
@@ -1197,7 +1245,7 @@ class ACESupervisor:
                 "all_results": [
                     {
                         "algo": r.algorithm_name,
-                        "score": r.metrics.get("score", 0.0),
+                        "score": r.metrics.get("score") or 0.0,
                         "score_source": r.metrics.get("score_source", "silhouette"),
                     }
                     for r in all_results
@@ -1232,6 +1280,20 @@ class ACESupervisor:
             report.latex_path = LatexReportGenerator().generate(report)
 
         self.last_report = report
+        # Build a lightweight version for follow-up context (no ndarrays)
+        # so the Streamlit singleton doesn't hold large labels arrays in memory.
+        self._last_report_light = {
+            "executive_summary": report.executive_summary,
+            "ranking": [
+                {"algorithm_name": r.algorithm_name, "metrics": dict(r.metrics)}
+                for r in (report.ranking or [])
+            ],
+            "dataset": report.dataset,
+            "routing": report.routing,
+            "dataset_plot_path": report.dataset_plot_path,
+            "output_dir": report.output_dir,
+            "response_type": report.response_type,
+        }
         self.memory.append({"role": "user", "content": prompt})
         self.memory.append({"role": "assistant", "content": report.executive_summary})
         return report
@@ -1597,6 +1659,7 @@ class ACESupervisor:
         topology_weighting: bool = False,
         diversity_constraints: bool = False,
         geodesic_distortion: float = 0.0,
+        output_dir: Path = Path(""),
     ) -> AlgorithmRunResult | None:
         """Run EnsembleConsensusExpert to fuse all expert labels.
 
@@ -1640,6 +1703,7 @@ class ACESupervisor:
                 topology_weighting=topology_weighting,
                 diversity_constraints=diversity_constraints,
                 geodesic_distortion=geodesic_distortion,
+                output_dir=output_dir,
             )
             if result is not None:
                 trace.append(
@@ -2062,18 +2126,21 @@ class ACESupervisor:
                 )
                 return None
 
-            # Time-series data: raw (N, T*F) at high dimension causes two problems:
-            #  (a) Euclidean methods drown in the curse of dimensionality
-            #      (e.g. Spectral_kNN O(N²D) times out at 4032D).
-            #  (b) DTW on the raw shape is O(N²T²) and also times out for
-            #      moderate N (~3000).
-            # Solution: apply PCA to a moderate dimension (200D, 99% variance)
-            # so Euclidean methods can run, while DTW-aware experts can still
-            # use tslearn metrics in the reduced space.  We strip the ts_shape
-            # hint from metadata after PCA since reshape→(N,T,F) is no longer
-            # valid — the DTW prompt will steer experts toward the reduced form.
+            # Time-series data: when the number of time steps (T) is small and
+            # N is moderate, DTW on the raw shape is viable without PCA.
+            # DTW complexity is O(N²·T²), not O(N²·D), so T=63 with N=3000
+            # is far cheaper than Euclidean O(N²·D) on 4032D.
+            # For small-T time-series, we SKIP PCA to preserve the temporal
+            # ordering — experts reshape in-sandbox and use DTW directly.
             if _meta.get("is_time_series") and _meta.get("ts_shape"):
                 _ts_T, _ts_F = _meta["ts_shape"]
+                if _ts_T <= 128 and n_samples <= 5000:
+                    trace.append(
+                        f"【时序路由】T={_ts_T}≤128, N={n_samples}≤5000。"
+                        f"DTW 复杂度 O(N²·{_ts_T}²) 可控，"
+                        f"跳过 PCA 保留原始时序形状 ({_ts_T}×{_ts_F}) 供 DTW 聚类使用。"
+                    )
+                    return None
                 # Higher cap for time-series: 200D lets Spectral survive while
                 # keeping most of the temporal signal.
                 n_components_max = min(200, n_features, n_samples - 1)
@@ -2155,6 +2222,71 @@ class ACESupervisor:
             return None
 
     @staticmethod
+    def _apply_hard_dim_reduction(
+        dataset: DatasetBundle,
+        target_dim: int,
+        trace: list[str],
+        *,
+        modality: ModalityProfile | None = None,
+    ) -> DatasetBundle | None:
+        """Hard-cap dimension reduction to target_dim using TruncatedSVD or PCA.
+
+        Unlike _apply_highdim_reduction (variance-based, triggers at D>200),
+        this is invoked by the data-size gate and guarantees output dimension
+        ≤ target_dim regardless of variance retained.
+        """
+        try:
+            X = np.asarray(dataset.X, dtype=float)
+            n_samples, n_features = X.shape
+            target_dim = min(target_dim, n_features, n_samples - 1)
+
+            if n_features <= target_dim:
+                return None
+
+            # Modality-aware reducer selection
+            _md = dataset.metadata or {}
+            dim_hint = _md.get("dim_reduction_hint", "pca")
+            if modality is not None:
+                dim_hint = modality.dim_reduction_hint
+
+            if dim_hint == "truncated_svd":
+                from sklearn.decomposition import TruncatedSVD
+                reducer = TruncatedSVD(n_components=target_dim, random_state=42)
+                method = "TruncatedSVD"
+            else:
+                from sklearn.decomposition import PCA
+                reducer = PCA(n_components=target_dim, svd_solver="randomized", random_state=42)
+                method = "PCA"
+
+            # Fit on subset for speed when N is large
+            if n_samples > 5000:
+                rng = np.random.default_rng(42)
+                fit_idx = rng.choice(n_samples, size=min(5000, n_samples), replace=False)
+                reducer.fit(X[fit_idx])
+                X_reduced = reducer.transform(X)
+            else:
+                X_reduced = reducer.fit_transform(X)
+
+            trace.append(
+                f"【硬降维门禁】{method} {n_features}D → {target_dim}D"
+                f"（规模门禁强制，非方差保留模式）。"
+            )
+
+            return DatasetBundle(
+                name=f"{dataset.name}_{method.lower()}{target_dim}",
+                display_name=f"{dataset.display_name} ({method}{target_dim})",
+                X=X_reduced.astype(float),
+                y=dataset.y,
+                description=f"{method}-reduced from {n_features}D to {target_dim}D for scale safety.",
+                shape_family=dataset.shape_family,
+                feature_names=[f"{method[:3]}{i + 1}" for i in range(target_dim)],
+                metadata={**(_md or {}), "preprocessing": f"hard_{method.lower()}"},
+            )
+        except Exception as exc:
+            trace.append(f"【硬降维门禁】{method} 降维失败 ({exc})，继续使用原始数据。")
+            return None
+
+    @staticmethod
     def _subsample_large_dataset(
         dataset: DatasetBundle,
         max_samples: int = 10_000,
@@ -2208,6 +2340,101 @@ class ACESupervisor:
             feature_names=dataset.feature_names,
             metadata={**(dataset.metadata or {}), "preprocessing": "subsample", "original_n_samples": n_samples},
         )
+
+    @staticmethod
+    def _compute_data_cost_budget(dataset: DatasetBundle) -> dict[str, Any]:
+        """Pre-flight scale gate based on N×D cost metric.
+
+        Returns a dict with gating decisions that prevent sandbox timeout
+        on large / high-dimensional datasets.  Unlike the existing N-based
+        timeout (which ignores D), this gate uses the product N×D as a
+        proxy for both distance-matrix cost and memory pressure.
+
+        Tier 0 (N×D <  2M): no restrictions
+        Tier 1 (N×D ≥  2M): PCA ≤50D, block Agglomerative/Spectral/Affinity/MeanShift, 120s
+        Tier 2 (N×D ≥ 10M): as Tier 1 + block DBSCAN/OPTICS, downsample N>20k→2k, 300s
+        Tier 3 (N×D ≥ 50M): PCA ≤32D, aggressive downsample, block HDBSCAN/Birch too, 300s
+        """
+        X = np.asarray(dataset.X, dtype=float)
+        n, d = X.shape
+
+        # For time-series with small T, DTW cost is O(N²·T²), not O(N²·D).
+        # Use T² as the effective dimension so the gate doesn't over-react
+        # to high feature counts that encode short temporal sequences.
+        _md = dataset.metadata or {}
+        _is_small_ts = False
+        if _md.get("is_time_series") and _md.get("ts_shape"):
+            _ts_T = int(_md["ts_shape"][0])
+            if _ts_T <= 128:
+                _is_small_ts = True
+                cost = n * (_ts_T ** 2)
+            else:
+                cost = n * d
+        else:
+            cost = n * d
+
+        result: dict[str, Any] = {
+            "n_samples": n,
+            "n_features": d,
+            "cost_score": cost,
+            "force_dim_reduce": False,
+            "cap_dims": 0,
+            "block_o_n2_algorithms": [],
+            "force_downsample_to": None,
+            "timeout_tier": 0,
+            "log_message": "",
+        }
+
+        if cost < 2_000_000:
+            return result
+
+        if cost >= 2_000_000:
+            result["timeout_tier"] = 1  # 120s
+            result["block_o_n2_algorithms"] = [
+                "AgglomerativeClustering", "SpectralClustering",
+                "AffinityPropagation", "MeanShift",
+            ]
+            if not _is_small_ts:
+                result["force_dim_reduce"] = True
+                result["cap_dims"] = min(50, d)
+            result["log_message"] = (
+                f"【规模门禁 Tier 1】{'时序成本' if _is_small_ts else 'N×D'}={cost / 1e6:.1f}M ≥ 2M。"
+                + (f"强制降维至≤{result['cap_dims']}D，" if result["force_dim_reduce"] else "保留原始时序形状，")
+                + f"屏蔽O(N²)算法: {', '.join(result['block_o_n2_algorithms'])}。"
+                f"沙箱超时升至 120s。"
+            )
+
+        if cost >= 10_000_000:
+            result["timeout_tier"] = 2  # 300s
+            result["block_o_n2_algorithms"].extend(["DBSCAN", "OPTICS"])
+            if not _is_small_ts:
+                result["force_dim_reduce"] = True
+                result["cap_dims"] = min(50, d)
+            if n > 20000:
+                result["force_downsample_to"] = 2000
+                result["log_message"] += (
+                    f" N>20000，追加降采样至 {result['force_downsample_to']}。"
+                )
+            else:
+                result["log_message"] = (
+                    f"【规模门禁 Tier 2】{'时序成本' if _is_small_ts else 'N×D'}={cost / 1e6:.1f}M ≥ 10M。"
+                    + (f"强制降维至≤{result['cap_dims']}D，" if result["force_dim_reduce"] else "保留原始时序形状，")
+                    + f"屏蔽O(N²)/密度算法: {', '.join(result['block_o_n2_algorithms'])}。"
+                    f"沙箱超时升至 300s。"
+                )
+
+        if cost >= 50_000_000:
+            result["cap_dims"] = min(32, d)
+            result["force_downsample_to"] = min(2000, max(500, n // 10))
+            result["block_o_n2_algorithms"].extend(["HDBSCAN", "Birch"])
+            result["force_dim_reduce"] = True
+            result["log_message"] = (
+                f"【规模门禁 Tier 3】{'时序成本' if _is_small_ts else 'N×D'}={cost / 1e6:.1f}M ≥ 50M。"
+                f"强制降维至≤{result['cap_dims']}D + 降采样至 {result['force_downsample_to']}。"
+                f"仅保留轻量算法。"
+            )
+
+        return result
 
     def _apply_manifold_preprocessing(
         self,
@@ -2290,12 +2517,14 @@ class ACESupervisor:
     def _handle_follow_up(self, prompt: str, settings: LLMSettings, trace: list[str]) -> SupervisorReport:
         """纯 LLM 驱动的追问或学术咨询处理。"""
         client = UniversalLLMClient(settings)
+        _prev = self._last_report_light if hasattr(self, "_last_report_light") else None
 
-        if self.last_report:
+        if _prev:
             context = {
-                "last_summary": self.last_report.executive_summary,
+                "last_summary": _prev["executive_summary"],
                 "ranking": [
-                    {"algo": r.algorithm_name, "score": r.metrics.get("score")} for r in self.last_report.ranking
+                    {"algo": r["algorithm_name"], "score": r["metrics"].get("score")}
+                    for r in (_prev.get("ranking") or [])
                 ],
             }
             system_msg = f"你是一个数据科学专家。请基于以下聚类背景及检索到的知识回答用户问题：\n{context}"
@@ -2307,15 +2536,15 @@ class ACESupervisor:
 
         report = SupervisorReport(
             dataset=(
-                self.last_report.dataset
-                if self.last_report
+                _prev["dataset"]
+                if _prev
                 else DatasetBundle("Consultation", np.array([[0, 0]]), None)
             ),
-            routing=(self.last_report.routing if self.last_report else RoutingDecision(None, [], trace)),
-            dataset_plot_path=(self.last_report.dataset_plot_path if self.last_report else Path("")),
-            output_dir=self.last_report.output_dir if self.last_report else Path(""),
+            routing=(_prev["routing"] if _prev else RoutingDecision(None, [], trace)),
+            dataset_plot_path=(_prev["dataset_plot_path"] if _prev else Path("")),
+            output_dir=_prev["output_dir"] if _prev else Path(""),
             results=[],
-            ranking=self.last_report.ranking if self.last_report else [],
+            ranking=[],
             executive_summary=res or "无法生成回答。",
             decision_trace=trace,
             response_type="FOLLOW_UP",
@@ -2354,16 +2583,17 @@ class ACESupervisor:
         trace.append("【主控】代码示例生成完毕。")
 
         # 复用上次报告的 dataset/routing/output_dir 字段，保持 UI 不崩溃
+        _prev = self._last_report_light if hasattr(self, "_last_report_light") else None
         placeholder_ds = (
-            self.last_report.dataset if self.last_report else DatasetBundle("code_example", np.array([[0, 0]]), None)
+            _prev["dataset"] if _prev else DatasetBundle("code_example", np.array([[0, 0]]), None)
         )
         report = SupervisorReport(
             dataset=placeholder_ds,
-            routing=(self.last_report.routing if self.last_report else RoutingDecision(None, [], trace)),
-            dataset_plot_path=(self.last_report.dataset_plot_path if self.last_report else Path("")),
-            output_dir=self.last_report.output_dir if self.last_report else Path(""),
+            routing=(_prev["routing"] if _prev else RoutingDecision(None, [], trace)),
+            dataset_plot_path=(_prev["dataset_plot_path"] if _prev else Path("")),
+            output_dir=_prev["output_dir"] if _prev else Path(""),
             results=[],
-            ranking=self.last_report.ranking if self.last_report else [],
+            ranking=[],
             executive_summary=code_md,
             decision_trace=trace,
             response_type="CODE_EXAMPLE",
@@ -2452,10 +2682,10 @@ class ACESupervisor:
         if X.shape[1] > 2:
             from sklearn.decomposition import PCA
             X = PCA(n_components=2, random_state=42).fit_transform(X)
-        plt.figure(figsize=(6, 4))
+        plt.figure(figsize=(8, 6))
         plt.scatter(X[:, 0], X[:, 1], c="gray", alpha=0.5, s=10)
         plt.title(f"Dataset: {dataset.display_name}")
-        plt.savefig(path)
+        plt.savefig(path, dpi=150)
         plt.close()
         return path
 

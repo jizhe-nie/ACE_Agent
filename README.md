@@ -128,7 +128,10 @@ streamlit run web_demo.py
 #### Phase 8 — 多 LLM 混合架构 (2026-05 进行中)
 - [x] **ModalityProfile 模态感知系统**: 集中式 dataclass + `detect_modality()` 检测函数，自动推断距离度量 (euclidean/cosine)，贯穿 graph 构图 / 专家路由 / 无标签排名 / Critic 审计全链路。支持 time_series (DTW hint)、text/sparse (cosine + L2 normalize)、image、tabular 四种模态。 (**2026-05-18 DONE**)
 - [x] **无标签排名 metric 感知**: 当无 ground-truth 标签时，Silhouette 自动使用 ModalityProfile 推断的距离度量 (text→cosine, 其他→euclidean)，消除文本数据欧氏距离评分偏差。 (**2026-05-18 DONE**)
-- [x] **KnowledgeEngine 路径健壮性修复**: `db_path` / `docs_dir` 改为 `__file__` 基准绝对路径，消除 CWD 依赖导致的 ChromaDB 查询为空问题。 (**2026-05-18 DONE**)
+- [x] **降维模态感知**: `dim_reduction_hint` 接入 dimension expert 全链路 — LLM 决策提示 + `_build_smart_defaults()` 模态感知，text→TruncatedSVD，time_series→PCA。 (**2026-05-19 DONE**)
+- [x] **KnowledgeEngine 路径健壮性修复**: `db_path` / `docs_dir` 改为 `__file__` 基准绝对路径，消除 CWD 依赖。 (**2026-05-18 DONE**)
+- [x] **Session 持久化修复**: 用户消息立即写盘 + 异常捕获扩展，解决重启后历史会话丢失。 (**2026-05-19 DONE**)
+- [x] **项目文件清理**: 根目录散落 .png、outputs/ 300+ 历史图片、benchmark_cache 等残留全部清理，.gitignore 加固。 (**2026-05-19 DONE**)
 - [ ] **异构模型路由**: 调度 GPT-4o 负责审计 (Critic)，DeepSeek-Coder 负责代码生成。
 - [ ] **多方审查机制**: 当 Critic 裁决为 RETRY 时，引入第二个 LLM 进行交叉验证。
 - [ ] **性能分级**: 轻量级任务 (FOLLOW_UP) 路由到廉价模型，复杂任务 (NEW_TASK) 路由到旗舰模型。
@@ -291,7 +294,45 @@ streamlit run web_demo.py
 - **三领域 RAG 并行**：禁止同时启动多个领域插件
 - **LLM Token 预算熔断**：低优先级，当前自愈追踪已到位，暂不实现硬性上限
 
-### 4. 规划决策约束 (Governance)
+### 4. 2026-05-19 路线图评估与后续建议
+
+#### 当前完成度总览
+
+| Phase | 状态 | 关键成果 |
+|-------|------|---------|
+| Phase 0 (工程基线) | ✅ DONE | CI/CD + ruff + mypy + pytest-cov + 沙箱安全 |
+| Phase 1 (评估闭环) | ✅ DONE | Critic + Benchmark + Dimension Expert 重构 |
+| Phase 2 (集成聚类) | ✅ DONE | Ensemble Consensus + Critic 2.0 闭环 + HITL Lite |
+| Phase 3 (深度聚类) | ✅ DONE | Conv-AE + SelfLabel 师生蒸馏 (ARI 0.8454) |
+| Phase 6 (智能诊断) | ✅ DONE | NMI + Hopkins 门禁 + 结果缓存 + 审计严格化 |
+| Phase 7 (性能优化) | ✅ DONE | Session 瘦身 + Ensemble 熔断 + 自适应超时 |
+| Phase 8 (模态感知) | 🟡 80% | ModalityProfile + 降维感知 + Session 持久化 ✅ / 异构模型路由 ❌ |
+| Phase 4 (高维真实数据) | 🔴 5% | 数据集加载代码完备，但从未 benchmark 验证 |
+| Phase 5 (RAG/KIM) | ⬜ 0% | 受 Governance 约束，Phase 4 完成前不启动 |
+
+#### 建议后续 4 步
+
+**Step 1 — Phase 4.1 数据集首轮 Benchmark (P0, 1-2 天)**
+- 运行 `BENCHMARK_FULL`（12 数据集 × zoo 专家），建立高维真实数据基线
+- 重点验证：reuters (cosine)、news (cosine)、har (time_series)、cifar10_raw (image)
+- 输出 per-algorithm ranking table，识别各数据集的 SOTA 算法
+- 预期发现：text 数据集上 cosine 路由 vs 欧氏路由的 ARI 差异；cifar10_raw 上 image pipeline 是否真正生效
+
+**Step 2 — Phase 4.2 2D 数据瘦身 + UI 清理 (P1, 半天)**
+- 方案 A（推荐）：保留代码，从 UI 下拉框和 benchmark 默认列表中移除 6 个 SIPU 2D 数据
+- 清理 web_demo.py 中废弃的 gallery_legacy / dimension / zoo 静态目录引用
+
+**Step 3 — Dimension Expert TruncatedSVD 管线 (P1, 1 天)**
+- `dim_reduction_hint` 已接入，但骨架中尚无专用 `truncated_svd_kmeans` 管线
+- 新增管线 #8：TruncatedSVD → KMeans (sparse text 首选路径)
+- 更新 `_DECISION_SYSTEM_PROMPT` 和 `_build_smart_defaults()` 对应激活逻辑
+
+**Step 4 — Phase 4.3 深度管线高维适配验证 (P2, 1-2 天)**
+- DimensionExpert 激活阈值 `n_features > 32` → `n_features > 16`
+- Conv-AE SelfLabel 在 cifar10_raw/cifar10_gap/cifar10_resnet 上首轮验证
+- 高维数据 Critic audit 默认开启 `fast_audit`
+
+### 5. 规划决策约束 (Governance)
 
 后续任何 PR、Issue、功能提案必须满足：
 1. **地基优先**：Phase 4 未完成前，不启动 Phase 5 (RAG/KIM)。
@@ -300,26 +341,35 @@ streamlit run web_demo.py
 4. **文档同步**：代码变更须同步更新本 README 与 Engineering Handbook，禁止"TODO 与现实脱节"再次发生。
 5. **冲突仲裁**：本章节为唯一权威路线图；若需调整，须显式在 PR 说明中标注 "PM-Review-Override"。
 
-### 2026-05-18 更新 — ModalityProfile + 无标签排名 + KnowledgeEngine 修复
+### 2026-05-19 更新 — 降维模态感知 + 项目清理 + Session 持久化修复
 
-**ModalityProfile 模态感知系统** (`agent_core/schemas.py`)
-- 新增 `ModalityProfile` dataclass：`modality_type`, `distance_metric`, `l2_normalize`, `ts_shape`, `dim_reduction_hint`
-- 新增 `detect_modality()` 检测函数，优先级: time_series → text/sparse → image → tabular
-- 贯穿全链路：graph_builder metric 参数化 → supervisor 路由 → 无标签排名 → Critic 审计
+**降维与模态感知深化**
+- `dim_reduction_hint` 从死代码接入全链路：supervisor 注入 metadata → dimension expert LLM 决策提示 → `_build_smart_defaults()` 模态感知
+- 文本数据 (reuters, news)：自动禁用 UMAP/t-SNE，引导 TruncatedSVD + cosine 聚类
+- 时序数据 (har)：自动禁用 UMAP/t-SNE，保留 PCA 保持时序连续性
+- **har 数据集修复**: metadata 新增 `is_time_series: True`（之前漏标，时序模态未激活）
+- **news 加入 BENCHMARK_FULL**: 新增第二个 text/sparse 基准测试点
 
-**无标签排名 metric 感知** (`agent_core/supervisor.py`)
-- `_compute_informed_ranking()` 在无 ground-truth 标签时，使用 modality.distance_metric 重新计算 Silhouette
-- 文本数据自动切换为 cosine 距离，消除欧氏距离对稀疏文本向量的评分偏差
+**项目文件清理**
+- 根目录清理：删除 18 个散落 .png 文件（dbscan/kmeans/gmm/spectral 等调试输出）
+- `outputs/` 清理：删除 300+ 张 `ensemble_consensus_*.png`、`dimension/`、`zoo/`、`gallery_legacy/`（47 文件）、100+ 历史运行目录
+- 其他清理：`benchmark_cache/`、`clustering_output/`、`_minted/`、`artifacts/`、`plots/`、`output/`、LaTeX build artifacts
+- `.gitignore` 加固：新增 `/*.png` `/*.pdf` `/*.npy` `output/*` 防御规则
 
-**KnowledgeEngine 修复** (`agent_brain/knowledge_engine.py`)
-- `db_path` 默认值从相对路径 `"agent_brain/memory_vdb"` 改为 `__file__` 基准绝对路径
-- `docs_dir` 默认值从 `"docs"` 改为 `Path(__file__).resolve().parents[1] / "docs"`
-- 消除 CWD 依赖导致的 ChromaDB 查询为空、文档重复索引入库失败问题
+**关键 Bug 修复**
+- **Ensemble 图表路径**: `execute_ensemble()` 新增 `output_dir` 参数，共识热力图跟随运行结果目录而非散落 `outputs/` 根
+- **LaTeX 生成器空路径**: 空 `plot_path` / `dataset_plot_path` 不再生成 `\includegraphics{}` 导致编译报错
+- **Session 持久化**: 用户消息在发送时立即写盘（之前仅在助手响应后延迟保存，崩溃即丢失）；`save_session()` 异常捕获从 `OSError` 扩展为 `Exception`（防御 JSON 序列化 TypeError）
 
-**新增依赖**: `sentence-transformers` (RAG 语义检索), `hdbscan` (拓扑专家), `pypdf` (PDF 解析)
+**当前状态**
+- **测试**: 132 通过 / 0 失败 / 2 跳过
+- **数据集**: 28 个（12 个高维真实 + 6 个合成 + 4 个 SIPU + 6 个 Phase 4 新数据）
+- **模态覆盖**: tabular / text (cosine) / time_series / image，BENCHMARK_FULL 含 12 数据集
+- **核心代码**: ~23,000 行 Python，60 个 .py 文件
 
-**提交记录** (7 commits):
+**提交记录** (9 commits):
 ```
+cf32b45 docs: update README with ModalityProfile + KnowledgeEngine fixes, add deps
 500fbb4 fix: resolve KnowledgeEngine relative-path fragility
 f9d1f3f chore: cleanup — remove generated files, update .gitignore, prune dead code
 d9b0dd0 feat: harden image detection heuristics in data_factory
@@ -329,6 +379,46 @@ b32d0bf fix: dimension pipeline embedding export + AE/DEC adaptive params
 6a925f7 fix: session persistence OSError hardening + expert embedding_path propagation
 ```
 
+### 2026-05-21 更新 — DTW 时序聚类 + LaTeX 编译修复 + 历史会话恢复 + 渲染健壮性
+
+**心音数据 DTW 时序聚类**
+- 新建 `data/user_uploads/heart_normal.meta.json` / `heart_abnormal.meta.json` 伴生元数据文件
+- 心音 Mel 频谱图数据 (63 时间步 × 64 mel bands) 上传后自动识别为时序模态
+- `web_demo.py` 新增 `data/user_uploads/` 备选 meta.json 搜索路径
+- PCA Gate 时序豁免：T ≤ 128 且 N ≤ 5000 时跳过 PCA，保留原始时序形状供 DTW 使用
+- Cost Budget 用时序公式 N×T² 替代 N×D，避免 DTW 计算被误判超时
+- `zoo_expert.py` 代码生成新增 DTW 双管线：TimeSeriesKMeans(metric="dtw") + SpectralDTW (cdist_dtw → precomputed)
+- `topology_expert.py` LLM 系统提示词注入 DTW 拓扑分析说明（cdist_dtw, Sakoe-Chiba 加速）
+- N > 500 时自动启用 Sakoe-Chiba 带约束加速
+
+**历史会话渲染修复**
+- **根因**: `settings_store.py` 的 key-name 黑名单将 `_report_summary["ranking"]` 误清空为 `[]`
+- **修复**: 重命名为 `"ranking_rows"` 避开黑名单，历史会话恢复后排名表、图片、摘要完整显示
+
+**TypeError 崩溃修复**
+- **根因**: Python `dict.get("score", 0)` 在 key 存在但 value 为 `None` 时返回 `None`，`float(None)` 崩溃
+- **修复**: 全部 8 处脆弱点改为 `.get("score") or 0.0`，覆盖 6 个文件 (`web_demo.py`, `supervisor.py`, `latex_generator.py`, `demo_runner.py`, `benchmark/runner.py`)
+- 上游防御：topology expert 提示词新增无标签时 `score = silhouette_score()` 指令
+
+**LaTeX 编译修复（4 项根因）**
+- **双重转义**: `_latex_escape` 用占位符先存 `\`，其他字符转义完再恢复，消除 `\textbackslash\{\}` 污染
+- **图片路径丢失**: `_p.name` → `relative_to(output_dir)`，保留子目录结构（`zoo/kmeans.png`）
+- **Markdown/Emoji 污染**: 新增 `_md_summary_to_latex()` 将 `##`, `**`, `---`, 行内代码等转为 LaTeX 命令
+- **`_format_optional` 安全化**: 增加 try/except 防止非 float 值崩溃
+- `latex_generator.py` import 路径修正: `ACE_Agent.agent_core.schemas` → `agent_core.schemas`
+
+**输出文件组织结构化**
+- 新增 `ACE_OUTPUT_DIR` 沙箱环境变量，指向时间戳运行目录
+- 全部 5 个专家 (dimension/graph/zoo/centroid/topology) 的输出图片写入 `{output_dir}/{expert}/` 下
+- 不再散落在平铺共享目录，不同 run 之间互不覆盖
+
+**图表分辨率提升**
+- 全部 6 处 `dpi` 从 80/100 → 150，`figsize` 从 (6,4) → (8,6)，Web Demo 中图表可读性大幅提升
+- 覆盖：`centroid_expert.py`, `topology_expert.py`, `graph_expert.py`, `ensemble_expert.py`, `zoo_expert.py`, `dimension_expert.py`, `supervisor.py`
+
+**改动文件**: `web_demo.py`, `agent_core/supervisor.py`, `tools/coder_sandbox.py`, `tools/latex_generator.py`, `expert_sub_agents/topology_expert.py`, `expert_sub_agents/zoo_expert.py`, `expert_sub_agents/centroid_expert.py`, `expert_sub_agents/dimension_expert.py`, `expert_sub_agents/graph_expert.py`, `expert_sub_agents/ensemble_expert.py`, `scripts/demo_runner.py`, `benchmark/runner.py`
+
+---
 ### P0.5 紧急修复（2026-04-20）
 
 > Phase 0 之后、Phase 1 之前的补丁，修复三个生产验收中发现的 Bug。

@@ -1,27 +1,85 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 
-from ACE_Agent.agent_core.schemas import SupervisorReport
+from agent_core.schemas import SupervisorReport
+
+_BS_PLACEHOLDER = "\x00BS\x00"
 
 
 def _latex_escape(text: str) -> str:
-    replacements = {
-        "\\": "\\textbackslash{}",
-        "&": "\\&",
-        "%": "\\%",
-        "$": "\\$",
-        "#": "\\#",
-        "_": "\\_",
-        "{": "\\{",
-        "}": "\\}",
-        "~": "\\textasciitilde{}",
-        "^": "\\textasciicircum{}",
-    }
-    escaped = text
-    for key, value in replacements.items():
-        escaped = escaped.replace(key, value)
-    return escaped
+    """Escape special LaTeX characters. Uses a placeholder for backslash
+    to prevent double-escaping of LaTeX commands introduced by other
+    replacements (e.g. ``\\{`` → ``\\textbackslash{}\\{``)."""
+    text = str(text)
+    text = text.replace("\\", _BS_PLACEHOLDER)
+    text = text.replace("{", "\\{")
+    text = text.replace("}", "\\}")
+    text = text.replace("&", "\\&")
+    text = text.replace("%", "\\%")
+    text = text.replace("$", "\\$")
+    text = text.replace("#", "\\#")
+    text = text.replace("_", "\\_")
+    text = text.replace("~", "\\textasciitilde{}")
+    text = text.replace("^", "\\textasciicircum{}")
+    text = text.replace(_BS_PLACEHOLDER, "\\textbackslash{}")
+    return text
+
+
+def _strip_emoji(text: str) -> str:
+    """Remove emoji and other non-LaTeX-renderable Unicode symbols."""
+    result = []
+    for ch in str(text):
+        cp = ord(ch)
+        # Keep ASCII printables, CJK ranges, and common punctuation
+        if cp < 0x7F:
+            result.append(ch)
+        elif (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or
+              0x2000 <= cp <= 0x206F or 0x3000 <= cp <= 0x303F or
+              0xFF00 <= cp <= 0xFFEF or 0x0080 <= cp <= 0x00FF):
+            result.append(ch)
+        elif unicodedata.category(ch)[0] in ("L", "N", "P", "Z"):
+            # Letter, Number, Punctuation, Separator
+            result.append(ch)
+        else:
+            pass  # drop emoji, symbols like ≤ ≥ etc.
+    return "".join(result)
+
+
+def _md_summary_to_latex(text: str) -> str:
+    """Convert LLM Markdown summary to LaTeX-friendly plain text."""
+    text = _strip_emoji(str(text))
+
+    # Phase 1: Convert Markdown → LaTeX (before escaping, so regexes match)
+    text = re.sub(r'^####\s+(.+)$', r'\\paragraph{\1}', text, flags=re.MULTILINE)
+    text = re.sub(r'^###\s+(.+)$', r'\\subsubsection*{\1}', text, flags=re.MULTILINE)
+    text = re.sub(r'^##\s+(.+)$', r'\\subsection*{\1}', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', text)
+    text = re.sub(r'^---\s*$', r'\\medskip\\hrule\\medskip', text, flags=re.MULTILINE)
+    text = re.sub(r'^>\s+', r'\\quad\\textit{', text, flags=re.MULTILINE)
+    text = re.sub(r'`([^`]+)`', r'\\texttt{\1}', text)
+    text = text.replace("---", "\\hrulefill")
+
+    # Phase 2: Escape remaining LaTeX-special chars.
+    # We use placeholders to protect the commands inserted in Phase 1.
+    _protected: list[str] = []
+    def _protect(m: re.Match) -> str:
+        _protected.append(m.group(0))
+        return f"\x01CMD{len(_protected) - 1}\x01"
+    text = re.sub(r'\\[a-zA-Z]+\*?\{[^}]*\}', _protect, text)
+    text = re.sub(r'\\[a-zA-Z]+', _protect, text)
+
+    # Now escape special chars in unprotected text
+    for _ch in ("_", "&", "%", "$", "#", "{", "}", "~", "^"):
+        text = text.replace(_ch, "\\" + _ch)
+
+    # Restore protected commands
+    for _i, _cmd in enumerate(_protected):
+        text = text.replace(f"\x01CMD{_i}\x01", _cmd)
+
+    return text
 
 
 class LatexReportGenerator:
@@ -30,7 +88,8 @@ class LatexReportGenerator:
         if report.response_type == "CODE_EXAMPLE":
             raise ValueError("CODE_EXAMPLE 类型不生成 LaTeX 报告。")
         tex_path = report.output_dir / "ace_report.tex"
-        dataset_plot = report.dataset_plot_path.name.replace("\\", "/")
+        _ds_plot_path = getattr(report, "dataset_plot_path", None)
+        dataset_plot = _ds_plot_path.name.replace("\\", "/") if _ds_plot_path and _ds_plot_path.name else ""
         rows = []
         for item in report.ranking[:5]:
             rows.append(
@@ -38,7 +97,7 @@ class LatexReportGenerator:
                     [
                         _latex_escape(item.expert_label),
                         _latex_escape(item.algorithm_name),
-                        f"{float(item.metrics.get('score', 0.0)):.3f}",
+                        f"{float(item.metrics.get('score') or 0.0):.3f}",
                         _format_optional(item.metrics.get("ami")),
                         _format_optional(item.metrics.get("silhouette")),
                     ]
@@ -47,8 +106,21 @@ class LatexReportGenerator:
             )
 
         figures = []
+        _out_dir = Path(report.output_dir) if report.output_dir else Path(".")
         for item in report.ranking[:3]:
-            plot_name = item.plot_path.name.replace("\\", "/")
+            _p = getattr(item, "plot_path", None)
+            if not _p:
+                continue
+            _p_str = str(_p)
+            # Make path relative to the output_dir so \includegraphics can find it
+            try:
+                _rel = Path(_p_str).relative_to(_out_dir)
+                plot_name = _rel.as_posix()
+            except ValueError:
+                # Not under output_dir — use as-is or just the filename
+                plot_name = Path(_p_str).name.replace("\\", "/") if _p_str else ""
+            if not plot_name:
+                continue
             figures.append(
                 "\n".join(
                     [
@@ -81,14 +153,19 @@ class LatexReportGenerator:
                 r"\begin{document}",
                 r"\maketitle",
                 r"\section*{概览}",
-                _latex_escape(report.executive_summary),
+                _md_summary_to_latex(report.executive_summary),
                 r"\section*{数据集说明}",
-                _latex_escape(report.dataset.description),
-                r"\begin{figure}[H]",
-                r"\centering",
-                rf"\includegraphics[width=0.65\linewidth]{{{dataset_plot}}}",
-                rf"\caption{{数据集预览：{_latex_escape(report.dataset.display_name)}}}",
-                r"\end{figure}",
+                _latex_escape(str(report.dataset.description)[:2000]),
+                *(
+                    [
+                        r"\begin{figure}[H]",
+                        r"\centering",
+                        rf"\includegraphics[width=0.65\linewidth]{{{dataset_plot}}}",
+                        rf"\caption{{数据集预览：{_latex_escape(report.dataset.display_name)}}}",
+                        r"\end{figure}",
+                    ]
+                    if dataset_plot else []
+                ),
                 r"\section*{路由决策轨迹}",
                 r"\begin{itemize}",
                 *[rf"\item {_latex_escape(item)}" for item in report.routing.trace],
@@ -114,7 +191,10 @@ class LatexReportGenerator:
 def _format_optional(value: float | int | None) -> str:
     if value is None:
         return "n/a"
-    return f"{float(value):.3f}"
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def _build_audit_section(audit: dict) -> list[str]:  # type: ignore[type-arg]

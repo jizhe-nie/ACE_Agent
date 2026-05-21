@@ -19,7 +19,42 @@ class TopologyExpert(BaseExpert):
         constraints=None,
     ) -> str:
         constraint_prompt = self._inject_constraints_prompt(constraints)
-        system_prompt = constraint_prompt + (
+
+        # ---- Time-series modality hint for DTW-aware topology ----------
+        _ts_hint = ""
+        _md = dataset.metadata or {}
+        if _md.get("is_time_series") and _md.get("ts_shape"):
+            _ts_T, _ts_F = _md["ts_shape"]
+            _n_samp = dataset.X.shape[0]
+            _ts_hint = (
+                "\n## ⏱️ 时间序列模态 (DTW 拓扑分析)\n\n"
+                f"CTX_DATA.metadata 中 is_time_series=True, ts_shape=({_ts_T}, {_ts_F})。\n"
+                f"数据已展平为 (N, {_ts_T * _ts_F})。在进行拓扑分析之前：\n"
+                f"  X_ts = X.reshape(CTX_DATA.n_samples, {_ts_T}, {_ts_F})\n\n"
+                "DTW 距离在时间序列空间中的使用规则：\n"
+                "1. tslearn 已预注入：TimeSeriesKMeans 和 tslearn_metrics 可直接使用"
+                "（无需 import）。\n"
+                "2. 使用 tslearn_metrics.cdist_dtw(X_ts) 计算成对 DTW 距离矩阵。\n"
+                "3. 将 DTW 距离矩阵作为 OPTICS/DBSCAN 的 metric='precomputed' 输入：\n"
+                "   OPTICS(metric='precomputed', min_samples=...).fit(dtw_dist_matrix)\n"
+                "4. 或者转为亲和矩阵用于 SpectralClustering：\n"
+                "   aff = np.exp(-dtw_dist / sigma)\n"
+                "   SpectralClustering(affinity='precomputed').fit(aff)\n"
+                f"5. 样本量 N={_n_samp}。"
+            )
+            if _n_samp > 500:
+                _ts_hint += (
+                    f"\n   ⚠️ N={_n_samp}>500：DTW 使用 Sakoe-Chiba 带加速：\n"
+                    "   cdist_dtw(X_ts, global_constraint='sakoe_chiba',"
+                    " sakoe_chiba_radius=2)\n"
+                )
+            _ts_hint += (
+                "\n优先使用 DTW 距离（而非欧氏距离）进行拓扑分析。\n"
+                "欧氏 OPTICS/DBSCAN 仍然作为对比运行，但 DTW 结果写入"
+                " artifacts['OPTICS_DTW'] 和 artifacts['SpectralDTW']。\n\n"
+            )
+
+        system_prompt = constraint_prompt + _ts_hint + (
             "你是一个高级 Python 数据科学专家（拓扑与密度算法分支 v2.0）。\n"
             "## 核心指令：OPTICS 可达性优先 + Mutual k-NN 局部连接\n\n"
             "### 1. 必须显式包含所有导入（严禁省略！）：\n"
@@ -82,20 +117,25 @@ class TopologyExpert(BaseExpert):
             "- 若 adjacency 不连通，对每个连通分量分别 SpectralClustering。\n"
             "- 将 labels 写入 artifacts[\"Spectral_kNN\"]。\n\n"
             "### 5. 可视化合约（每个算法必做）：\n"
-            "- 散点图 PNG 保存到算法同名文件。\n"
+            "- 所有 plot PNG 保存到 ACE_OUTPUT_DIR/topology/ 目录下（若 ACE_OUTPUT_DIR 为空则用 outputs/topology/）。\n"
+            "  代码开头执行: _out_top = ACE_OUTPUT_DIR + '/topology' if ACE_OUTPUT_DIR else 'outputs/topology'; os.makedirs(_out_top, exist_ok=True)\n"
+            '- 散点图 PNG 按算法命名保存到 _out_top 下。\n'
             "- 噪声点 (label=-1) 用灰色，正常簇用不同颜色。\n"
-            '- OPTICS 额外生成可达性图 PNG，保存为 "optics_reachability.png"。\n'
+            '- OPTICS 额外生成可达性图 PNG，保存为 _out_top/optics_reachability.png。\n'
             "  ```python\n"
             "  _fig, _ax = plt.subplots(figsize=(8, 3))\n"
             '  _ax.plot(np.arange(len(_reach)), _reach[_opt.ordering_], "b-", lw=0.6)\n'
             '  _ax.set_xlabel("Order"); _ax.set_ylabel("Reachability dist.")\n'
-            '  _fig.savefig("optics_reachability.png", dpi=100, bbox_inches="tight")\n'
+            '  _fig.savefig(_out_top + "/optics_reachability.png", dpi=150, bbox_inches="tight")\n'
             "  plt.close(_fig)\n"
             "  ```\n"
             "### 6. 结构约束：\n"
             "- 代码在顶层直接运行。\n"
+            "- 结果写入 artifacts[algo_name] = {labels, metrics, plot_path}，plot_path 指向 _out_top/ 下的文件。\n"
+            "- 代码在顶层直接运行。\n"
             "- 结果写入 artifacts[algo_name] = {labels, metrics, plot_path}。\n"
             "- 若 y 非 None，metrics[\"score\"] = ARI(y, labels)，score_source=\"ari\"。\n"
+            "- 若 y 为 None（无标签），metrics[\"score\"] = silhouette_score(X_scaled, labels)，score_source=\"silhouette\"。严禁设置 score=None！\n"
             "只返回 Python 代码，不要有任何解释。"
         )
         user_input = (

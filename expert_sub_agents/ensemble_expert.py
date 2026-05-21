@@ -92,6 +92,7 @@ class EnsembleConsensusExpert(BaseExpert):
         topology_weighting: bool = False,
         diversity_constraints: bool = False,
         geodesic_distortion: float = 0.0,
+        output_dir: Path | None = None,
     ) -> AlgorithmRunResult | None:
         """Fuse labels from *results* and return a consensus result.
 
@@ -296,7 +297,8 @@ class EnsembleConsensusExpert(BaseExpert):
 
         # ---- Generate cluster visualization plot -------------------------
         plot_path = _generate_consensus_plot(
-            dataset.X, consensus_labels, n_samples, k_consensus
+            dataset.X, consensus_labels, n_samples, k_consensus,
+            output_dir=output_dir,
         )
 
         # ---- Graph connectivity agreement (Phase 3) -----------------------
@@ -615,6 +617,7 @@ def _generate_consensus_plot(
     labels: list[int],
     n_samples: int,
     k: int,
+    output_dir: Path | None = None,
 ) -> str:
     """Generate a scatter plot of data colored by consensus labels.
 
@@ -643,9 +646,10 @@ def _generate_consensus_plot(
         else:
             lbl_vis = np.array(labels, dtype=int)
 
-        _OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        _out_dir = output_dir if output_dir is not None else _OUTPUTS_DIR
+        _out_dir.mkdir(parents=True, exist_ok=True)
         uid = uuid.uuid4().hex[:8]
-        path = _OUTPUTS_DIR / f"ensemble_consensus_{uid}.png"
+        path = _out_dir / f"ensemble_consensus_{uid}.png"
 
         # Chinese font setup for Windows
         import matplotlib
@@ -657,7 +661,7 @@ def _generate_consensus_plot(
             plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
         plt.rcParams["axes.unicode_minus"] = False
 
-        fig, ax = plt.subplots(figsize=(7, 6))
+        fig, ax = plt.subplots(figsize=(8, 7))
         scatter = ax.scatter(
             X_vis[:, 0], X_vis[:, 1],
             c=lbl_vis, cmap="tab10", s=3 if n_samples > 2000 else 8,
@@ -672,7 +676,7 @@ def _generate_consensus_plot(
         cbar = plt.colorbar(scatter, ax=ax, shrink=0.85)
         cbar.set_label("Cluster", fontsize=9)
         plt.tight_layout()
-        fig.savefig(path, dpi=130, bbox_inches="tight")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
         _logger.info("Ensemble consensus plot saved: %s", path)

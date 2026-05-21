@@ -76,6 +76,23 @@ class ZooExpert(BaseExpert):
         expected_clusters = dataset.metadata.get("expected_clusters", 3)
         n_features = dataset.X.shape[1] if dataset.X.ndim == 2 else 1
 
+        # ---- Time-series DTW detection -----------------------------------
+        _is_ts = (
+            isinstance(dataset.metadata, dict)
+            and dataset.metadata.get("is_time_series")
+        )
+        _ts_shape = dataset.metadata.get("ts_shape") if _is_ts else None
+        _ts_valid = (
+            _ts_shape is not None
+            and isinstance(_ts_shape, (list, tuple))
+            and len(_ts_shape) == 2
+            and all(isinstance(d, int) for d in _ts_shape)
+        )
+        if _ts_valid:
+            _ts_T, _ts_F = int(_ts_shape[0]), int(_ts_shape[1])
+        else:
+            _ts_T = _ts_F = 0
+
         # 构造每个算法的参数（将占位符替换为实际值）
         algo_configs: list[dict[str, Any]] = []
         for algo in algos:
@@ -117,6 +134,23 @@ class ZooExpert(BaseExpert):
             else "_X_2d = _X_scaled"
         )
 
+        # ---- Conditional blocks for time-series DTW support --------------
+        if _ts_valid:
+            _tslearn_import_lines = [
+                "",
+                "# --- Time-series DTW imports (tslearn) ---",
+                "try:",
+                "    from tslearn.clustering import TimeSeriesKMeans as _TSKMeans",
+                "    import tslearn.metrics as _ts_metrics",
+                "    _has_tslearn = True",
+                "except ImportError:",
+                "    _has_tslearn = False",
+                '    import logging as _log_ts',
+                '    _log_ts.getLogger("zoo_expert").warning("tslearn 不可用，跳过 DTW 聚类。")',
+            ]
+        else:
+            _tslearn_import_lines = [""]
+
         # Build code as an unindented multiline string to avoid textwrap.dedent issues
         # caused by injected blocks with different indentation levels.
         lines = [
@@ -145,7 +179,7 @@ class ZooExpert(BaseExpert):
             "    _has_hdbscan = False",
             "    import logging as _logging_hdb",
             '    _logging_hdb.getLogger("zoo_expert").warning("HDBSCAN 不可用（sklearn < 1.3），已跳过。")',
-            "",
+            *_tslearn_import_lines,
             "try:",
             "    import matplotlib",
             '    matplotlib.use("Agg")',
@@ -161,7 +195,7 @@ class ZooExpert(BaseExpert):
             "    if not _has_matplotlib:",
             "        return out_path",
             "    try:",
-            "        _fig, _ax = _plt.subplots(figsize=(6, 4))",
+            "        _fig, _ax = _plt.subplots(figsize=(8, 6))",
             "        _unique = _np.unique(labels)",
             "        for _lbl in _unique:",
             "            _mask = labels == _lbl",
@@ -169,7 +203,7 @@ class ZooExpert(BaseExpert):
             "        _ax.set_title(title)",
             '        _ax.legend(loc="best", fontsize=7)',
             '        _os.makedirs(_os.path.dirname(out_path) if _os.path.dirname(out_path) else ".", exist_ok=True)',
-            '        _fig.savefig(out_path, dpi=80, bbox_inches="tight")',
+            '        _fig.savefig(out_path, dpi=150, bbox_inches="tight")',
             "        _plt.close(_fig)",
             "        return out_path",
             "    except Exception as _e:",
@@ -254,7 +288,7 @@ class ZooExpert(BaseExpert):
             "if _has_hdbscan:",
             '    _algo_map["HDBSCAN"] = _HDBSCAN',
             "",
-            '_output_base = "outputs/zoo"',
+            '_output_base = ACE_OUTPUT_DIR + "/zoo" if ACE_OUTPUT_DIR else "outputs/zoo"',
             "",
             "for _cfg in _algo_configs:",
             '    _name = _cfg["name"]',
@@ -292,6 +326,63 @@ class ZooExpert(BaseExpert):
             '            "labels": [], "metrics": {"score": 0.0, "error": str(_exc)},',
             '            "plot_path": ""}',
         ]
+        # ---- Append DTW execution block when time-series is detected ----
+        if _ts_valid:
+            lines.extend([
+                "",
+                "# --- Time-series DTW pipelines ---",
+                "if _has_tslearn:",
+                f"    _X_ts = X.reshape(_n, {_ts_T}, {_ts_F})",
+                f"    _k = {expected_clusters}",
+                "",
+                "    # DTW Pipeline 1: TimeSeriesKMeans with Sakoe-Chiba on large N",
+                "    try:",
+                "        if _n > 500:",
+                '            _tskm = _TSKMeans(',
+                '                n_clusters=_k, metric="dtw",',
+                '                metric_params={"global_constraint": "sakoe_chiba",',
+                '                               "sakoe_chiba_radius": 2},',
+                "                max_iter=10, random_state=42, n_jobs=1)",
+                "        else:",
+                '            _tskm = _TSKMeans(',
+                '                n_clusters=_k, metric="dtw",',
+                "                max_iter=10, random_state=42, n_jobs=1)",
+                "        _ts_labels = _tskm.fit_predict(_X_ts)",
+                "        _ts_metrics = _evaluate(_X_scaled, y, _ts_labels)",
+                '        _plot_clusters(_X_2d, _ts_labels, "TimeSeriesKMeans (DTW)",'
+                '                        f"{_output_base}/timeseries_kmeans_clusters.png")',
+                '        artifacts["TimeSeriesKMeans"] = {',
+                '            "labels": _ts_labels.tolist(), "metrics": _ts_metrics,',
+                '            "plot_path": f"{_output_base}/timeseries_kmeans_clusters.png"}',
+                "    except Exception as _exc:",
+                "        import logging as _log_ts1",
+                '        _log_ts1.getLogger("zoo_expert").warning(',
+                '            f"TimeSeriesKMeans 运行失败: {_exc}")',
+                "",
+                "    # DTW Pipeline 2: SpectralClustering with DTW affinity matrix",
+                "    try:",
+                "        if _n > 500:",
+                "            _dtw_dist = _ts_metrics.cdist_dtw(",
+                '                _X_ts, global_constraint="sakoe_chiba", sakoe_chiba_radius=2)',
+                "        else:",
+                "            _dtw_dist = _ts_metrics.cdist_dtw(_X_ts)",
+                "        _sigma = float(_np.median(_dtw_dist[_dtw_dist > 0])) \\",
+                "                 if _np.any(_dtw_dist > 0) else 1.0",
+                "        _aff = _np.exp(-_dtw_dist / max(_sigma, 1e-10))",
+                '        _spec = SpectralClustering(',
+                '            n_clusters=_k, affinity="precomputed", random_state=42)',
+                "        _sp_labels = _spec.fit_predict(_aff)",
+                "        _sp_metrics = _evaluate(_X_scaled, y, _sp_labels)",
+                '        _plot_clusters(_X_2d, _sp_labels, "SpectralClustering (DTW affinity)",'
+                '                        f"{_output_base}/spectral_dtw_clusters.png")',
+                '        artifacts["SpectralDTW"] = {',
+                '            "labels": _sp_labels.tolist(), "metrics": _sp_metrics,',
+                '            "plot_path": f"{_output_base}/spectral_dtw_clusters.png"}',
+                "    except Exception as _exc:",
+                "        import logging as _log_ts2",
+                '        _log_ts2.getLogger("zoo_expert").warning(',
+                '            f"SpectralDTW 运行失败: {_exc}")',
+            ])
         return "\n".join(lines) + "\n"
 
     # ------------------------------------------------------------------

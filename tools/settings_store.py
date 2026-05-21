@@ -91,103 +91,170 @@ class SessionManager:
 
     def __init__(self, path: Path = SESSIONS_PATH):
         self.path = path
-        self.sessions = self._load()
+        self._full_sessions: dict[str, list[dict]] = {}
+        self.sessions = self._load_metadata_only()
 
-    def _load(self) -> list[dict]:
+    def _load_raw(self) -> list[dict]:
+        """Load full sessions array from disk — shared by metadata and full load paths."""
         if not self.path.exists():
             return []
-        # Refuse to load files that are too large — they cause minutes-long
-        # hangs and consume gigabytes of memory during JSON parse.
         file_mb = self.path.stat().st_size / (1024 * 1024)
         if file_mb > self._MAX_FILE_MB:
             _backup = self.path.with_suffix(".json.bak")
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(Exception):
                 self.path.rename(_backup)
+            # OS-level delete if rename failed (e.g., backup already exists on Windows)
+            with contextlib.suppress(Exception):
+                if self.path.exists() and self.path.stat().st_size > 500 * 1024 * 1024:
+                    self.path.unlink()
             return []
         try:
             return json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
             return []
 
+    def _load_metadata_only(self) -> list[dict]:
+        """Load only metadata fields (no messages) for the sidebar session list."""
+        raw = self._load_raw()
+        return [
+            {
+                "id": s["id"],
+                "metadata": s.get("metadata", {}),
+                "updated_at": s.get("updated_at", ""),
+                "created_at": s.get("created_at", ""),
+                "message_count": len(s.get("messages", [])),
+            }
+            for s in raw
+        ]
+
+    def get_full_session(self, session_id: str) -> list[dict] | None:
+        """Load full session messages lazily (only on first access)."""
+        if session_id in self._full_sessions:
+            return self._full_sessions[session_id]
+        raw = self._load_raw()
+        for s in raw:
+            if s["id"] == session_id:
+                msgs = s.get("messages", [])
+                self._full_sessions[session_id] = msgs
+                return msgs
+        return None
+
     def _strip_heavy_data(self, data: Any) -> Any:
-        """Recursively remove large arrays/lists to keep session files small."""
+        """Recursively remove large arrays/objects to keep session files small."""
+        # Terminal: numpy arrays → stripped to empty list
+        if isinstance(data, np.ndarray):
+            return []
+
+        # Terminal: Path objects → string
+        if isinstance(data, Path):
+            return str(data)
+
+        # Dataclass: convert to dict, then strip recursively
+        if is_dataclass(data) and not isinstance(data, type):
+            return self._strip_heavy_data(asdict(data))
+
         if isinstance(data, dict):
-            # Target common large keys in our project
             clean_dict = {}
             for k, v in data.items():
                 if k in ("X", "y", "labels", "code", "feature_names", "decision_trace", "ranking"):
-                    clean_dict[k] = [] # Stripped
+                    clean_dict[k] = []
                 elif k == "thought" and isinstance(v, str) and len(v) > 5000:
                     clean_dict[k] = v[:5000] + "... [TRUNCATED]"
+                elif k == "dataset" and isinstance(v, dict):
+                    clean_dict[k] = {
+                        "name": v.get("name", ""),
+                        "display_name": v.get("display_name", ""),
+                        "description": (v.get("description", "") or "")[:500],
+                        "shape_family": v.get("shape_family", "unknown"),
+                    }
+                elif k == "results" and isinstance(v, list):
+                    clean_dict[k] = [
+                        {
+                            "algorithm_name": r.get("algorithm_name", "?") if isinstance(r, dict) else getattr(r, "algorithm_name", "?"),
+                            "expert_key": r.get("expert_key", "") if isinstance(r, dict) else getattr(r, "expert_key", ""),
+                            "expert_label": r.get("expert_label", "") if isinstance(r, dict) else getattr(r, "expert_label", ""),
+                            "metrics": (r.get("metrics", {}) if isinstance(r, dict) else getattr(r, "metrics", {})),
+                            "plot_path": str(r.get("plot_path", "")) if isinstance(r, dict) else str(getattr(r, "plot_path", "")),
+                        }
+                        for r in v
+                    ]
                 else:
                     clean_dict[k] = self._strip_heavy_data(v)
             return clean_dict
         if isinstance(data, list):
-            # If it's a list of many items and they aren't messages, it might be heavy
             if len(data) > 100:
-                # Check if it's a list of dicts (like messages), if so, keep it but strip each
                 if len(data) > 0 and isinstance(data[0], dict) and "role" in data[0]:
                     return [self._strip_heavy_data(i) for i in data]
-                return [] # Strip other large lists
+                return []
             return [self._strip_heavy_data(i) for i in data]
         return data
 
     def save_session(self, session_id: str, messages: list[dict], metadata: dict = None):
         # Strip heavy data from messages before saving
         clean_messages = self._strip_heavy_data(messages)
+        metadata = metadata or {}
+
+        # Load the raw sessions from disk (full, with messages) so we can
+        # update a single entry without losing data from other sessions.
+        raw = self._load_raw()
 
         session_data = {
             "id": session_id,
             "messages": clean_messages,
-            "metadata": metadata or {},
+            "metadata": metadata,
             "updated_at": datetime.now().isoformat(),
         }
 
-        # Check if session data actually changed (ignore updated_at)
-        for i, s in enumerate(self.sessions):
+        # Find and update in the raw array
+        for i, s in enumerate(raw):
             if s["id"] == session_id:
                 if (
                     s.get("messages") == clean_messages
-                    and s.get("metadata", {}) == (metadata or {})
+                    and s.get("metadata", {}) == metadata
                 ):
                     return  # No changes, skip disk write
                 session_data["created_at"] = s.get("created_at", session_data["updated_at"])
-                self.sessions[i] = session_data
+                raw[i] = session_data
                 break
         else:
             session_data["created_at"] = session_data["updated_at"]
-            self.sessions.insert(0, session_data)
+            raw.insert(0, session_data)
 
-        # Cap history to prevent session file inflation
-        if len(self.sessions) > self._MAX_SESSIONS:
-            self.sessions = self.sessions[: self._MAX_SESSIONS]
+        # Cap history
+        if len(raw) > self._MAX_SESSIONS:
+            raw = raw[: self._MAX_SESSIONS]
 
+        # Write full data to disk
         try:
             self.path.write_text(
-                json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(raw, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except OSError:
-            return  # Session save is best-effort; never crash the main flow
+        except Exception:
+            return
 
-        # Post-write safety valve: if the file still grew beyond limit,
-        # aggressively trim and re-write.
+        # Post-write safety valve
         try:
             _written_mb = self.path.stat().st_size / (1024 * 1024)
-        except OSError:
+        except Exception:
             return
         if _written_mb > self._MAX_FILE_MB:
             _keep = max(3, self._MAX_SESSIONS // 2)
-            self.sessions = self.sessions[:_keep]
-            with contextlib.suppress(OSError):
+            raw = raw[:_keep]
+            with contextlib.suppress(Exception):
                 self.path.write_text(
-                    json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
+                    json.dumps(raw, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+
+        # Update in-memory caches
+        if session_id in self._full_sessions:
+            self._full_sessions[session_id] = list(clean_messages)
+        self.sessions = self._load_metadata_only()
 
     def delete_session(self, session_id: str):
         old_len = len(self.sessions)
         self.sessions = [s for s in self.sessions if s["id"] != session_id]
         if len(self.sessions) != old_len:
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(Exception):
                 self.path.write_text(
                     json.dumps(self.sessions, cls=ACEJsonEncoder, ensure_ascii=False, indent=2), encoding="utf-8"
                 )

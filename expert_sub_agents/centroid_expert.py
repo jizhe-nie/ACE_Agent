@@ -37,8 +37,9 @@ class CentroidExpert(BaseExpert):
             '   - 若 y 为 None，则 metrics["score"] = silhouette_score(X, labels)，metrics["score_source"] = "silhouette"。\n'
             "   - 保留 silhouette / calinski_harabasz / davies_bouldin 等辅助指标。\n"
             "   - 必须在 artifacts 字典中存储结果。示例（y 为 None 时）：\n"
-            "artifacts['KMeans'] = {'labels': ..., 'metrics': {'score': 轮廓系数, 'silhouette': 轮廓系数, 'score_source': 'silhouette'}, 'plot_path': 'kmeans.png'}\n"
-            "注意：只返回 Python 代码，不要有任何解释。"
+            "artifacts['KMeans'] = {'labels': ..., 'metrics': {'score': 轮廓系数, 'silhouette': 轮廓系数, 'score_source': 'silhouette'}, 'plot_path': f'{ACE_OUTPUT_DIR}/centroid/kmeans.png' if ACE_OUTPUT_DIR else 'outputs/centroid/kmeans.png'}\n"
+            "注意：所有 plot PNG 必须保存到 ACE_OUTPUT_DIR/centroid/ 目录下（先 os.makedirs(ACE_OUTPUT_DIR + '/centroid' if ACE_OUTPUT_DIR else 'outputs/centroid', exist_ok=True)）。"
+            "只返回 Python 代码，不要有任何解释。"
         )
         user_input = f"数据集画像：{dataset.description}，样本量：{dataset.X.shape[0]}。"
         raw = client.chat_completion([{"role": "user", "content": user_input}], system_prompt)

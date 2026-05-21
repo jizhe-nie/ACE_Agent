@@ -1035,7 +1035,12 @@ def _load_har() -> DatasetBundle:
         description="HAR 人体活动识别：561 维传感器时序特征，10299 样本，6 类。",
         shape_family="spherical",
         feature_names=[f"feat_{i}" for i in range(561)],
-        metadata={"expected_clusters": 6, "source": "UCI/HAR", "n_samples": len(X)},
+        metadata={
+            "expected_clusters": 6,
+            "source": "UCI/HAR",
+            "n_samples": len(X),
+            "is_time_series": True,
+        },
     )
 
 

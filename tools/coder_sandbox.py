@@ -616,6 +616,7 @@ class CoderSandbox:
     ):
         self.timeout_sec = timeout_sec
         self.memory_mb = memory_mb
+        self.output_dir = ""  # set by supervisor before expert dispatch
 
     # ------------------------------------------------------------------
     # Public execute interface (used by expert agents)
@@ -686,6 +687,7 @@ class CoderSandbox:
                 expected_clusters=expected_clusters,
                 metadata=metadata,
             ),
+            "ACE_OUTPUT_DIR": self.output_dir or "",
             **merged_pre,
         }
 
