@@ -1063,7 +1063,6 @@ def _render_report_summary(s: dict) -> None:
 
     best_ari = s.get("winner_ari", -1.0)
     top = ranking[0]
-    top_ari = top.get("ari", -1.0) if isinstance(top, dict) else -1.0
     top_nmi = top.get("nmi", 0.0) if isinstance(top, dict) else 0.0
 
     c = st.columns(4)

@@ -4,7 +4,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from agent_core.schemas import SupervisorReport
+from ACE_Agent.agent_core.schemas import SupervisorReport
 
 _BS_PLACEHOLDER = "\x00BS\x00"
 
@@ -34,17 +34,13 @@ def _strip_emoji(text: str) -> str:
     for ch in str(text):
         cp = ord(ch)
         # Keep ASCII printables, CJK ranges, and common punctuation
-        if cp < 0x7F:
+        if (cp < 0x7F
+                or 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
+                or 0x2000 <= cp <= 0x206F or 0x3000 <= cp <= 0x303F
+                or 0xFF00 <= cp <= 0xFFEF or 0x0080 <= cp <= 0x00FF
+                or unicodedata.category(ch)[0] in ("L", "N", "P", "Z")):
             result.append(ch)
-        elif (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or
-              0x2000 <= cp <= 0x206F or 0x3000 <= cp <= 0x303F or
-              0xFF00 <= cp <= 0xFFEF or 0x0080 <= cp <= 0x00FF):
-            result.append(ch)
-        elif unicodedata.category(ch)[0] in ("L", "N", "P", "Z"):
-            # Letter, Number, Punctuation, Separator
-            result.append(ch)
-        else:
-            pass  # drop emoji, symbols like ≤ ≥ etc.
+        # else: drop emoji, symbols like ≤ ≥ etc.
     return "".join(result)
 
 
