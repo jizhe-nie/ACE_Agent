@@ -83,8 +83,8 @@ class ACESupervisor:
     @staticmethod
     def _code_version() -> str:
         """Return a short version string that changes when the code changes.
-        Uses the git HEAD hash if available; otherwise falls back to the
-        mtime of key source files.
+        Uses the git HEAD hash + dirty-flag if available; otherwise falls back
+        to the mtime of key source files.
         """
         try:
             import subprocess
@@ -94,7 +94,17 @@ class ACESupervisor:
                 cwd=str(root), capture_output=True, text=True, timeout=5,
             )
             if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
+                ver = r.stdout.strip()
+                # Detect dirty working tree — untracked files or modified tracked
+                # files in directories that affect clustering results.
+                dirty = subprocess.run(
+                    ["git", "status", "--porcelain",
+                     "agent_core/", "expert_sub_agents/", "tools/", "benchmark/"],
+                    cwd=str(root), capture_output=True, text=True, timeout=5,
+                )
+                if dirty.returncode == 0 and dirty.stdout.strip():
+                    ver += "-dirty"
+                return ver
         except Exception:
             pass
         # Fallback: hash mtimes of key modules that affect clustering results
@@ -156,7 +166,18 @@ class ACESupervisor:
             return None
         return self._result_cache.get(dh)
 
-    def _update_cache(self, dataset: DatasetBundle, best_ari: float, best_nmi: float, winner: str) -> None:
+    def _update_cache(
+        self,
+        dataset: DatasetBundle,
+        best_ari: float,
+        best_nmi: float,
+        winner: str,
+        ranking_rows: list[dict[str, object]] | None = None,
+        executive_summary: str = "",
+        output_dir: str = "",
+        dataset_plot_path: str = "",
+        winner_plot_path: str = "",
+    ) -> None:
         dh = self._dataset_hash(dataset)
         if not dh:
             return
@@ -166,6 +187,11 @@ class ACESupervisor:
             "winner": winner,
             "ts": datetime.now().isoformat(),
             "code_version": self._code_version(),
+            "ranking_rows": ranking_rows or [],
+            "executive_summary": executive_summary[:3000],
+            "output_dir": output_dir,
+            "dataset_plot_path": dataset_plot_path,
+            "winner_plot_path": winner_plot_path,
         }
         # Cap cache size
         if len(self._result_cache) > self._CACHE_MAX_ENTRIES:
@@ -229,11 +255,11 @@ class ACESupervisor:
 
         trace = [f"【主控】确认意图: {intent}", f"【逻辑】{reasoning}", trace_msg]
 
-        # HITL约束检测
+        # HITL: 提示词级约束注入（非 COP-KMeans 等约束优化器）
         if constraints and constraints.get("reference_labels"):
             trace.append(
                 f"【HITL】检测到人工标注参考标签（{len(constraints['reference_labels'])} 个数据点），"
-                "将作为约束传递给各专家。"
+                "将作为提示词约束注入各专家（非严格 must-link/cannot-link）。"
             )
 
         # 2. 意图分流
@@ -320,23 +346,41 @@ class ACESupervisor:
                 f"(缓存时间: {_cached.get('ts', '?')})。"
                 f"将跳过本次计算，直接返回缓存结论。"
             )
-            # Build a minimal cached report
+            # Reconstruct ranking list from cached lightweight rows
+            _cached_ranking: list[AlgorithmRunResult] = []
+            for _row in (_cached.get("ranking_rows") or []):
+                _cached_ranking.append(AlgorithmRunResult(
+                    algorithm_name=str(_row.get("algorithm", "?")),
+                    expert_key="",
+                    expert_label=str(_row.get("expert", "")),
+                    labels=np.array([]),
+                    metrics={
+                        "ari": _row.get("ari", -1.0),
+                        "nmi": _row.get("nmi", 0.0),
+                    },
+                    plot_path=Path(""),
+                ))
+            # Set winner plot path from cache
+            _winner_plot = _cached.get("winner_plot_path", "")
+            if _cached_ranking and _winner_plot:
+                _cached_ranking[0].plot_path = Path(_winner_plot)
+            _cached_summary = _cached.get("executive_summary", "") or (
+                f"## 缓存命中\n\n"
+                f"该数据集 `{dataset.display_name}` 此前已经运行过完整分析。\n\n"
+                f"- 优胜算法: **{_cached.get('winner', '?')}**\n"
+                f"- ARI: **{_cached.get('best_ari', 0):.3f}**\n"
+                f"- NMI: **{_cached.get('best_nmi', 0):.3f}**\n"
+                f"- 缓存时间: {_cached.get('ts', '?')}\n\n"
+                f"如需重新计算，请清除缓存文件 `.ace_result_cache.json` 或更换数据集参数。"
+            )
             return SupervisorReport(
                 dataset=dataset,
                 routing=RoutingDecision(None, [], trace, modality=modality),
-                dataset_plot_path=Path(""),
-                output_dir=Path(""),
-                results=[],
-                ranking=[],
-                executive_summary=(
-                    f"## 缓存命中\n\n"
-                    f"该数据集 `{dataset.display_name}` 此前已经运行过完整分析。\n\n"
-                    f"- 优胜算法: **{_cached.get('winner', '?')}**\n"
-                    f"- ARI: **{_cached.get('best_ari', 0):.3f}**\n"
-                    f"- NMI: **{_cached.get('best_nmi', 0):.3f}**\n"
-                    f"- 缓存时间: {_cached.get('ts', '?')}\n\n"
-                    f"如需重新计算，请清除缓存文件 `.ace_result_cache.json` 或更换数据集参数。"
-                ),
+                dataset_plot_path=Path(_cached.get("dataset_plot_path", "") or ""),
+                output_dir=Path(_cached.get("output_dir", "") or ""),
+                results=_cached_ranking,
+                ranking=_cached_ranking,
+                executive_summary=_cached_summary,
                 decision_trace=trace,
                 response_type="CLUSTER_TASK",
             )
@@ -376,7 +420,27 @@ class ACESupervisor:
             best_ari = float(best_m.get("ari", -1.0))
             best_nmi = float(best_m.get("nmi", 0.0))
             if best_ari > -0.5:
-                self._update_cache(dataset, best_ari, best_nmi, best.algorithm_name)
+                _ranking_rows = []
+                for i, item in enumerate(result.ranking[:10]):
+                    _m = getattr(item, "metrics", {}) or {}
+                    _ranking_rows.append({
+                        "rank": i + 1,
+                        "algorithm": getattr(item, "algorithm_name", "?"),
+                        "expert": getattr(item, "expert_label", ""),
+                        "ari": _m.get("ari", -1.0) if isinstance(_m, dict) else -1.0,
+                        "nmi": _m.get("nmi", 0.0) if isinstance(_m, dict) else 0.0,
+                    })
+                _ds_plot = str(getattr(result, "dataset_plot_path", ""))
+                _winner_plot = str(getattr(best, "plot_path", ""))
+                _out_dir = str(getattr(result, "output_dir", ""))
+                self._update_cache(
+                    dataset, best_ari, best_nmi, best.algorithm_name,
+                    ranking_rows=_ranking_rows,
+                    executive_summary=getattr(result, "executive_summary", ""),
+                    output_dir=_out_dir,
+                    dataset_plot_path=_ds_plot,
+                    winner_plot_path=_winner_plot,
+                )
         return result
 
     # ------------------------------------------------------------------
@@ -496,19 +560,19 @@ class ACESupervisor:
             _base_timeout = 90
         if _base_timeout > 60:
             trace.append(
-                f"【沙箱超时】数据集 {_n_samples} 样本，"
-                f"沙箱超时调整为 {_base_timeout}s。"
+                f"【执行超时】数据集 {_n_samples} 样本，"
+                f"超时调整为 {_base_timeout}s。"
             )
         if getattr(settings, "deep_mode", False) and _n_samples > 5000:
             _base_timeout += 60
-            trace.append(f"【沙箱超时】深度模式 +60s → {_base_timeout}s。")
+            trace.append(f"【执行超时】深度模式 +60s → {_base_timeout}s。")
 
         # DTW distance matrix is O(N²T), roughly 30× slower than Euclidean.
-        # Bump timeout to avoid sandbox kills during time-series clustering.
+        # Bump timeout to avoid executor kills during time-series clustering.
         if modality.modality_type == "time_series" and modality.ts_large_n:
             _base_timeout = max(_base_timeout, 180)
             trace.append(
-                f"【沙箱超时】时序数据 DTW 上调至 {_base_timeout}s"
+                f"【执行超时】时序数据 DTW 上调至 {_base_timeout}s"
                 f"（{_n_samples} 样本，O(N²T) 计算密集）。"
             )
 
@@ -581,7 +645,7 @@ class ACESupervisor:
                 _dtw_hint = (
                     f"\n\n【时间序列路由】此数据为时间序列，原始形状为 ({_ts_T} 时间步 × {_ts_F} 特征)，"
                     f"已展平为 {_ts_T * _ts_F}D，共 {_n_samples} 个样本。"
-                    f"沙箱已预注入 TimeSeriesKMeans (from tslearn.clustering)，支持 DTW 距离。"
+                    f"执行环境已预注入 TimeSeriesKMeans (from tslearn.clustering)，支持 DTW 距离。"
                 )
                 if _n_samples > 500:
                     _dtw_hint += (
@@ -926,7 +990,7 @@ class ACESupervisor:
                 if _not_computed:
                     _collapse_msg = (
                         f"审计引擎坍缩：bootstrap_stability={_stab:.2f}, hopkins={_hop:.2f}。"
-                        f"审计沙箱超时导致指标未完成计算（哨兵值）。"
+                        f"审计执行超时导致指标未完成计算（哨兵值）。"
                         f"聚类结果的实际可信度无法验证，请人工审查。"
                     )
                 else:
@@ -1332,7 +1396,7 @@ class ACESupervisor:
             fast_audit = True
             trace.append(
                 f"【审计】{_n_features}D 高维数据自动切换快速审计模式"
-                f"（跳过全量审计以避免沙箱超时坍缩）。"
+                f"（跳过全量审计以避免执行超时坍缩）。"
             )
 
         mode_label = "快速审计" if fast_audit else "完整审计"
@@ -1429,7 +1493,7 @@ class ACESupervisor:
             else:
                 # ---- Audit returned None (sandbox timeout) — retry fast_audit ----
                 trace.append(
-                    "【审计】审计未产出有效报告（sandbox 超时），自动切换 fast_audit 重试..."
+                    "【审计】审计未产出有效报告（执行超时），自动切换 fast_audit 重试..."
                 )
                 _retry_succeeded = False
                 try:
@@ -1501,7 +1565,7 @@ class ACESupervisor:
                         "action": "WARN",
                         "confidence_level": 0.3,
                         "findings": ["审计超时，无法完成全量分析。建议人工检查聚类质量。"],
-                        "recommendation": "审计沙箱超时（timeout=" + str(_audit_timeout_sec) + "s），请考虑启用 fast_audit 模式或减小数据集。",
+                        "recommendation": "审计执行超时（timeout=" + str(_audit_timeout_sec) + "s），请考虑启用 fast_audit 模式或减小数据集。",
                         "degraded": True,
                     }
 
@@ -2401,7 +2465,7 @@ class ACESupervisor:
                 f"【规模门禁 Tier 1】{'时序成本' if _is_small_ts else 'N×D'}={cost / 1e6:.1f}M ≥ 2M。"
                 + (f"强制降维至≤{result['cap_dims']}D，" if result["force_dim_reduce"] else "保留原始时序形状，")
                 + f"屏蔽O(N²)算法: {', '.join(result['block_o_n2_algorithms'])}。"
-                f"沙箱超时升至 120s。"
+                f"执行超时升至 120s。"
             )
 
         if cost >= 10_000_000:
@@ -2420,7 +2484,7 @@ class ACESupervisor:
                     f"【规模门禁 Tier 2】{'时序成本' if _is_small_ts else 'N×D'}={cost / 1e6:.1f}M ≥ 10M。"
                     + (f"强制降维至≤{result['cap_dims']}D，" if result["force_dim_reduce"] else "保留原始时序形状，")
                     + f"屏蔽O(N²)/密度算法: {', '.join(result['block_o_n2_algorithms'])}。"
-                    f"沙箱超时升至 300s。"
+                    f"执行超时升至 300s。"
                 )
 
         if cost >= 50_000_000:
@@ -2556,7 +2620,7 @@ class ACESupervisor:
     # ------------------------------------------------------------------
 
     def _handle_code_example(self, prompt: str, settings: LLMSettings, trace: list[str]) -> SupervisorReport:
-        """处理 CODE_EXAMPLE 意图：用 LLM 生成自包含代码，不走沙箱，不生成图。
+        """处理 CODE_EXAMPLE 意图：用 LLM 生成自包含代码，不进入执行器，不生成图。
 
         返回 SupervisorReport(response_type="CODE_EXAMPLE")，
         executive_summary 为 Markdown 代码块字符串。

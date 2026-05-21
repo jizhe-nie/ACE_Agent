@@ -1,13 +1,17 @@
 """
 tools/coder_sandbox.py
 ======================
-Safe Python execution sandbox for ACE Agent (Phase 0).
+Restricted Python code executor for ACE Agent (Phase 0).
+
+This is a restricted executor (同进程 exec + 线程超时), NOT a process-level
+security sandbox. Python threads cannot be forcibly killed; after timeout the
+computation may continue consuming resources in the background.
 
 Security features:
 - Restricted builtins (allowlist only)
 - Dangerous os/sys methods intercepted (os.remove, os.system, sys.exit, etc.)
 - High-risk modules blocked entirely (subprocess, socket, pickle, shutil, etc.)
-- Wall-clock timeout via threading.Timer
+- Wall-clock timeout via threading.Timer (best-effort, not preemptive)
 - Memory upper bound monitored via psutil (Windows-compatible; no resource module needed)
 - SandboxResourceExceeded raised with typed reason string: "timeout" | "memory" | "cpu"
 
@@ -16,7 +20,7 @@ Configuration (environment variables or constructor kwargs):
   ACE_SANDBOX_MEMORY_MB     : RSS memory ceiling in MiB (default 2048 = 2 GiB)
 
 Pre-injection (Phase 3):
-  Core sklearn types are pre-injected into every sandbox namespace so that
+  Core sklearn types are pre-injected into the executor namespace so that
   LLM-generated code need not import them.  A read-only DataContext object
   (CTX_DATA) carries X, y and metadata to eliminate ``NameError: data is
   not defined`` and similar variable-binding mistakes.

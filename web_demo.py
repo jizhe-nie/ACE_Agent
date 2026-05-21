@@ -781,6 +781,7 @@ def _handle_prompt(
             ds_label = _format_dataset_label(ds_name) if ds_name else ""
             intent = supervisor.router.analyze_intent(
                 prompt, supervisor.memory, settings, dataset_context=ds_label,
+                client=router_client,
             )
             st.write(f"意图判定: **{intent.get('intent')}** ({intent.get('reasoning')})")
             _accumulate_cost(router_client)

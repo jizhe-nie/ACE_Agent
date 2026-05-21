@@ -4,7 +4,7 @@
 
 ACE Agent is a multi-expert LLM-driven clustering system. The supervisor orchestrates
 a pool of 7 specialist agents (centroid, topology, zoo, dimension, critic, ensemble,
-graph) that each generate Python code, execute it in a sandbox, and self-correct on
+graph) that each generate Python code, execute it in a restricted executor, and self-correct on
 failure. Results are ranked via ARI (when ground-truth labels exist) or internal
 metrics, audited post-hoc, and fused into a consensus.
 
@@ -58,7 +58,7 @@ user prompt → MasterRouter (intent)
   banned from winning, regardless of ARI.
 - **Multi-tier Audit Timeout**: Normal → fast_audit (skip bootstrap) → auto-relaxed
   (500 samples + 2x timeout). Designed for high-dim data where distance matrices
-  cause 120s+ sandbox timeouts.
+  cause 120s+ executor timeouts.
 
 ## Development Guidelines
 
@@ -82,7 +82,7 @@ user prompt → MasterRouter (intent)
 ### Expert implementation:
 - All experts subclass `BaseExpert` and implement `_generate_code()`
 - Experts that don't need LLM set `REQUIRES_LLM = False`
-- Generated code writes to the `artifacts` dict injected by the sandbox
+- Generated code writes to the `artifacts` dict injected by the executor
 - Code MUST NOT: use `if __name__ == "__main__"`, define uncalled `main()`/`run()`,
   or reassign the `artifacts` variable
 

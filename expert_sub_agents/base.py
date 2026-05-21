@@ -306,6 +306,11 @@ class BaseExpert(ABC):
         """Build a constraint instruction block for the LLM system prompt.
 
         Used by Critic 2.0 to inject retry_constraints into code generation.
+
+        This is prompt-level constraint injection only — it adds natural-language
+        instructions to the system prompt. It is NOT a formal constrained-clustering
+        solver (no COP-KMeans, no must-link/cannot-link propagation, no constraint
+        optimisation). The LLM may honour or ignore these hints.
         """
         if not constraints:
             return ""

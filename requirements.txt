@@ -6,6 +6,7 @@ scikit-learn
 umap-learn
 requests
 torch
+torchvision
 loguru
 pytest
 scipy
@@ -14,4 +15,6 @@ chromadb
 sentence-transformers
 hdbscan
 pypdf
+psutil
+tiktoken
 

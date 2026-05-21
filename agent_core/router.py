@@ -24,6 +24,7 @@ class MasterRouter:
         history: list[Any],
         settings: LLMSettings,
         dataset_context: str = "",
+        client: UniversalLLMClient | None = None,
     ) -> dict[str, Any]:
         """使用 LLM 识别意图。强制要求返回 JSON。
 
@@ -34,7 +35,8 @@ class MasterRouter:
         if not settings.is_configured:
             return {"intent": "NEW_TASK", "reasoning": "LLM 未配置，默认开启新任务"}
 
-        client = UniversalLLMClient(settings)
+        if client is None:
+            client = UniversalLLMClient(settings)
         history_context = "\n".join([f"{m['role']}: {m['content'][:100]}" for m in history[-3:]])
 
         dataset_hint = ""
