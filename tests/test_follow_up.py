@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 from ACE_Agent.agent_core.supervisor import ACESupervisor
 from ACE_Agent.tools.data_factory import generate_dataset
-from ACE_Agent.tools.llm_client import LLMSettings
+from ACE_Agent.tools.llm_client import LLMSettings, MultiLLMConfig
 from ACE_Agent.tools.settings_store import DEFAULT_PROVIDERS, SettingsStore
 
 
@@ -61,7 +61,7 @@ def test_follow_up() -> None:
     # Task 1: initial clustering analysis
     dataset = generate_dataset("smile")
     print("\n--- Task 1: analyse smile dataset ---")
-    report1 = supervisor.run(dataset, "帮我分析这个笑脸数据", llm_settings=settings)
+    report1 = supervisor.run(dataset, "帮我分析这个笑脸数据", llm_config=MultiLLMConfig(worker=settings))
     print(f"intent: {report1.response_type}")
     if report1.llm_summary:
         print(f"summary: {report1.llm_summary[:100]}...")
@@ -71,7 +71,7 @@ def test_follow_up() -> None:
     report2 = supervisor.run(
         dataset,
         "具体解释一下为什么选择这个算法？它的轮廓系数是多少？",
-        llm_settings=settings,
+        llm_config=MultiLLMConfig(worker=settings),
     )
     print(f"intent: {report2.response_type}")
     print(f"answer: {report2.llm_summary}")

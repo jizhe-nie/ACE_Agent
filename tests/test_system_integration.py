@@ -25,6 +25,8 @@ _root_parent = str(Path(__file__).resolve().parents[2])
 if _root_parent not in sys.path:
     sys.path.insert(0, _root_parent)
 
+from ACE_Agent.tools.llm_client import MultiLLMConfig
+
 
 # ============================================================================
 # Module 1: Import chain integrity
@@ -200,7 +202,7 @@ class TestSupervisorRouting:
             report = sv.run(
                 dataset=None,
                 user_prompt="为什么选择KMeans?",
-                llm_settings=self._settings(),
+                llm_config=MultiLLMConfig(worker=self._settings()),
                 intent_data={"intent": "FOLLOW_UP", "reasoning": "追问"},
             )
         assert report.response_type == "FOLLOW_UP"
@@ -220,7 +222,7 @@ class TestSupervisorRouting:
             report = sv.run(
                 dataset=None,
                 user_prompt="生成KMeans代码示例",
-                llm_settings=self._settings(),
+                llm_config=MultiLLMConfig(worker=self._settings()),
                 intent_data={"intent": "CODE_EXAMPLE", "reasoning": "代码示例"},
             )
         assert report.response_type == "CODE_EXAMPLE"
@@ -234,7 +236,7 @@ class TestSupervisorRouting:
         report = sv.run(
             dataset=None,
             user_prompt="分析这个数据集",
-            llm_settings=self._settings(),
+            llm_config=MultiLLMConfig(worker=self._settings()),
             intent_data={"intent": "NEW_TASK", "reasoning": "新任务"},
         )
         assert "未识别到数据" in report.executive_summary
@@ -255,7 +257,7 @@ class TestSupervisorRouting:
             report = sv.run(
                 dataset=ds,
                 user_prompt="聚类分析",
-                llm_settings=self._settings(),
+                llm_config=MultiLLMConfig(worker=self._settings()),
                 intent_data={"intent": "NEW_TASK", "reasoning": "新任务"},
                 constraints={"reference_labels": [0, 1, 0]},
             )
@@ -759,7 +761,7 @@ class TestFullPipelineSmoke:
             report = sv.run(
                 dataset=ds,
                 user_prompt="对这个数据集做聚类分析",
-                llm_settings=settings,
+                llm_config=MultiLLMConfig(worker=settings),
                 intent_data={"intent": "NEW_TASK", "reasoning": "用户要求聚类"},
             )
 
@@ -801,7 +803,7 @@ class TestFullPipelineSmoke:
             report = sv.run(
                 dataset=ds,
                 user_prompt="聚类分析",
-                llm_settings=settings,
+                llm_config=MultiLLMConfig(worker=settings),
                 intent_data={"intent": "NEW_TASK", "reasoning": "测试"},
                 constraints={"reference_labels": [0, 1, 0, 1, 0] * 4},
             )

@@ -30,19 +30,38 @@ pytest tests/test_system_integration.py -q
 user prompt → MasterRouter (intent)
            → ACESupervisor
                ├── RAG (knowledge_engine)
-               ├── DataStructureClassifier (graph_connected/spherical/...)
+               ├── preflight.py — pre-dispatch analysis
+               │     ├── DataStructureClassifier (graph_connected/spherical/...)
+               │     ├── Connectivity pre-check (geodesic distortion)
+               │     ├── Hopkins gating + cost budget gate
+               │     ├── Dimension reduction / subsampling
+               │     └── Manifold preprocessing (UMAP)
                ├── Expert dispatch (parallel)
                │     ├── CentroidExpert (KMeans/GMM/Birch)
                │     ├── TopologyExpert (DBSCAN/HDBSCAN/OPTICS/Spectral)
                │     ├── ZooExpert (dynamic algorithm selection)
                │     ├── DimensionExpert (7 deep pipelines)
                │     └── GraphExpert (community discovery, conditional)
-               ├── Informed Ranking (ARI veto when labels exist)
-               ├── CriticAudit (post-hoc, 3-tier timeout)
-               ├── Critic 2.0 Feedback Loop (RETRY with constraints)
+               ├── ranking.py — post-dispatch scoring
+               │     ├── Informed Ranking (ARI veto when labels exist)
+               │     ├── Consensus Trap Detection
+               │     └── Graph winner cross-validation
+               ├── reflection.py — post-ranking audit
+               │     ├── CriticAudit (post-hoc, 3-tier timeout)
+               │     ├── Critic 2.0 Feedback Loop (RETRY with constraints)
+               │     └── LLM-3 Reflection Summary
                ├── Ensemble Consensus (co-association matrix)
-               └── LLM Summary
+               └── Final Report Assembly
 ```
+
+### Module layout
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `agent_core/supervisor.py` | ~1500 | Orchestration, expert dispatch, ensemble, cache |
+| `agent_core/preflight.py` | ~1100 | Pre-dispatch: data classification, gates, dim reduction |
+| `agent_core/ranking.py` | ~350 | Post-dispatch: ARI ranking, veto, consensus trap |
+| `agent_core/reflection.py` | ~480 | Post-ranking: audit, Critic 2.0 retry, LLM summary |
 
 ## Key Design Decisions
 

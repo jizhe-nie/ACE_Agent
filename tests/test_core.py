@@ -26,6 +26,7 @@ from ACE_Agent.agent_core.router import MasterRouter  # noqa: E402
 from ACE_Agent.agent_core.schemas import DatasetBundle  # noqa: E402
 from ACE_Agent.agent_core.supervisor import ACESupervisor  # noqa: E402
 from ACE_Agent.tools.data_factory import generate_dataset  # noqa: E402
+from ACE_Agent.tools.llm_client import MultiLLMConfig  # noqa: E402
 from ACE_Agent.tools.llm_client import LLMSettings  # noqa: E402
 
 
@@ -152,7 +153,7 @@ class TestACESupervisor:
         report = sv.run(
             dataset=None,
             user_prompt="分析数据",
-            llm_settings=unconfigured_settings,
+            llm_config=MultiLLMConfig(worker=unconfigured_settings),
             intent_data={"intent": "NEW_TASK", "reasoning": "test"},
         )
         assert report is not None
@@ -164,7 +165,7 @@ class TestACESupervisor:
         report = sv.run(
             dataset=None,
             user_prompt="请解释轮廓系数的含义",
-            llm_settings=unconfigured_settings,
+            llm_config=MultiLLMConfig(worker=unconfigured_settings),
             intent_data={"intent": "FOLLOW_UP", "reasoning": "咨询问题"},
         )
         assert report is not None
