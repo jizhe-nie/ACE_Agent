@@ -297,16 +297,22 @@ def _sidebar_ui():  # returns MultiLLMConfig
                     type="password",
                     key="router_api_key",
                 )
+                rp_model_options = ["(自定义模型...)"] + rp_cfg["models"]
+                saved_rp_model = ss.get("router_model", "")
+                is_custom_rp = saved_rp_model and saved_rp_model not in rp_cfg["models"]
+                rp_default_idx = 0 if is_custom_rp else (
+                    rp_model_options.index(saved_rp_model) if saved_rp_model in rp_model_options else 0
+                )
                 rp_model_sel = st.selectbox(
                     "Router 模型",
-                    ["(自定义模型...)" ] + rp_cfg["models"],
-                    index=0,
+                    rp_model_options,
+                    index=rp_default_idx,
                     key="router_model_sel",
                 )
                 if rp_model_sel == "(自定义模型...)":
                     rp_model = st.text_input(
                         "自定义 Router 模型",
-                        value=ss.get("router_model", ""),
+                        value=saved_rp_model if is_custom_rp else "",
                         placeholder="如 qwen3.6-flash",
                         key="router_model_custom",
                     )
@@ -342,16 +348,22 @@ def _sidebar_ui():  # returns MultiLLMConfig
                     type="password",
                     key="reflection_api_key",
                 )
+                ref_model_options = ["(自定义模型...)"] + ref_cfg["models"]
+                saved_ref_model = ss.get("reflection_model", "")
+                is_custom_ref = saved_ref_model and saved_ref_model not in ref_cfg["models"]
+                ref_default_idx = 0 if is_custom_ref else (
+                    ref_model_options.index(saved_ref_model) if saved_ref_model in ref_model_options else 0
+                )
                 ref_model_sel = st.selectbox(
                     "Reflection 模型",
-                    ["(自定义模型...)" ] + ref_cfg["models"],
-                    index=0,
+                    ref_model_options,
+                    index=ref_default_idx,
                     key="reflection_model_sel",
                 )
                 if ref_model_sel == "(自定义模型...)":
                     ref_model = st.text_input(
                         "自定义 Reflection 模型",
-                        value=ss.get("reflection_model", ""),
+                        value=saved_ref_model if is_custom_ref else "",
                         placeholder="如 gemini-3.1-pro-preview",
                         key="reflection_model_custom",
                     )

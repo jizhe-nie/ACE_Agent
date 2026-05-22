@@ -22,19 +22,19 @@ SESSIONS_PATH = Path(__file__).resolve().parents[1] / ".ace_sessions.json"
 DEFAULT_PROVIDERS = {
     "DeepSeek": {
         "base_url": "https://api.deepseek.com",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
+        "models": ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro"],
         "icon": "🌊",
     },
     "DashScope": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": ["qwen-plus", "qwen-max"],
+        "models": ["qwen-plus", "qwen-max", "qwen3.6-flash"],
         "icon": "☁️",
     },
     "Moonshot": {"base_url": "https://api.moonshot.cn/v1", "models": ["moonshot-v1-8k"], "icon": "🌙"},
     "OpenAI": {"base_url": "https://api.openai.com/v1", "models": ["gpt-4o", "gpt-4-turbo"], "icon": "🤖"},
     "Gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "models": ["gemini-1.5-pro"],
+        "models": ["gemini-1.5-pro", "gemini-3.1-pro-preview"],
         "icon": "♊",
     },
 }
@@ -132,12 +132,18 @@ class SettingsStore:
         if not worker.model:
             active_p = self.get("active_provider", "DeepSeek")
             p_cfg = DEFAULT_PROVIDERS.get(active_p, {})
+            extra_body = None
+            if active_p == "DeepSeek":
+                thinking_enabled = self.get("worker_thinking_enabled", True)
+                if not thinking_enabled:
+                    extra_body = {"thinking": {"type": "disabled"}}
             worker = LLMSettings(
                 provider=active_p,
                 base_url=p_cfg.get("base_url", ""),
                 api_key=self.get("api_keys", {}).get(active_p, ""),
                 model=self.get("model", ""),
                 temperature=self.get("temperature", 0.2),
+                extra_body=extra_body,
             )
 
         router = _build_role("router")
