@@ -6,10 +6,13 @@ import os
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from ACE_Agent.tools.llm_client import MultiLLMConfig
 
 load_dotenv()
 
@@ -59,19 +62,38 @@ class ACEJsonEncoder(json.JSONEncoder):
 
 
 class SettingsStore:
+    # Multi-LLM role names for env var lookup
+    _ROLE_KEYS = ("router", "worker", "reflection")
+
     def __init__(self, path: Path = SETTINGS_PATH):
         self.path = path
         self._cache = self._load()
 
     def _load(self) -> dict:
-        settings = {"active_provider": "DeepSeek", "api_keys": {}, "temperature": 0.2, "llm_enabled": True}
+        settings = {
+            "active_provider": "DeepSeek", "api_keys": {}, "temperature": 0.2,
+            "llm_enabled": True,
+            "router_provider": "", "router_model": "", "router_api_key": "",
+            "worker_provider": "", "worker_model": "", "worker_api_key": "",
+            "worker_thinking_enabled": True,
+            "reflection_provider": "", "reflection_model": "", "reflection_api_key": "",
+        }
         for p in DEFAULT_PROVIDERS:
             if key := os.getenv(f"ACE_{p.upper()}_API_KEY"):
                 settings["api_keys"][p] = key
+        # Multi-LLM env var overrides
+        for role in self._ROLE_KEYS:
+            _pfx = f"ACE_{role.upper()}"
+            for _field in ("_API_KEY", "_MODEL", "_BASE_URL"):
+                _val = os.getenv(f"{_pfx}{_field}")
+                if _val:
+                    settings[f"{role}{_field.lower()}"] = _val
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
-                settings.update({k: v for k, v in data.items() if k in settings or k == "model"})
+                for k, v in data.items():
+                    if k in settings or k.startswith(("router_", "worker_", "reflection_")) or k == "model":
+                        settings[k] = v
             except Exception:
                 pass
         return settings
@@ -83,6 +105,50 @@ class SettingsStore:
         self._cache.update(payload)
         with contextlib.suppress(OSError):
             self.path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def build_multi_llm_config(self) -> MultiLLMConfig:
+        """Build a MultiLLMConfig from stored settings + env vars."""
+        from ACE_Agent.tools.llm_client import LLMSettings
+        from ACE_Agent.tools.llm_client import MultiLLMConfig as _MC
+
+        def _build_role(role: str, fallback_provider: str = "DeepSeek") -> LLMSettings:
+            provider = self.get(f"{role}_provider") or fallback_provider
+            cfg = DEFAULT_PROVIDERS.get(provider, {})
+            base_url = self.get(f"{role}_base_url") or cfg.get("base_url", "")
+            model = self.get(f"{role}_model") or ""
+            api_key = self.get(f"{role}_api_key") or self.get("api_keys", {}).get(provider, "")
+            extra_body = None
+            if provider == "DeepSeek" and role == "worker":
+                thinking_enabled = self.get("worker_thinking_enabled", True)
+                if not thinking_enabled:
+                    extra_body = {"thinking": {"type": "disabled"}}
+            return LLMSettings(
+                provider=provider, base_url=base_url, api_key=api_key,
+                model=model, temperature=0.2, extra_body=extra_body,
+            )
+
+        worker = _build_role("worker")
+        # If worker not explicitly configured, use primary settings
+        if not worker.model:
+            active_p = self.get("active_provider", "DeepSeek")
+            p_cfg = DEFAULT_PROVIDERS.get(active_p, {})
+            worker = LLMSettings(
+                provider=active_p,
+                base_url=p_cfg.get("base_url", ""),
+                api_key=self.get("api_keys", {}).get(active_p, ""),
+                model=self.get("model", ""),
+                temperature=self.get("temperature", 0.2),
+            )
+
+        router = _build_role("router")
+        if not router.is_configured:
+            router = None  # will fallback via _MC.get_router()
+
+        reflection = _build_role("reflection")
+        if not reflection.is_configured:
+            reflection = None
+
+        return _MC(router=router, worker=worker, reflection=reflection)
 
 
 class SessionManager:

@@ -185,9 +185,10 @@ def _read_trace_stats() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
-    """Render sidebar; return (primary_settings, fallback_settings)."""
+def _sidebar_ui():  # returns MultiLLMConfig
+    """Render sidebar; return MultiLLMConfig with router/worker/reflection settings."""
     from ACE_Agent.tools.llm_client import LLMSettings as _LLMS
+    from ACE_Agent.tools.llm_client import MultiLLMConfig as _MConfig
     sm = st.session_state.session_manager
     ss = st.session_state.settings_store
 
@@ -223,8 +224,10 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
         with st.popover("Model Config", use_container_width=True):
             provider_names = list(DEFAULT_PROVIDERS.keys())
 
-            # Primary provider
-            st.markdown("**Primary Provider**")
+            # ------------------------------------------------------------------
+            # LLM-2: Worker (code generation — primary, always required)
+            # ------------------------------------------------------------------
+            st.markdown("### 🛠️ Worker (LLM-2) — 代码生成")
             active_p = st.selectbox(
                 "供应商",
                 provider_names,
@@ -240,7 +243,6 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
             )
             model_options = ["(自定义模型...)" ] + p_cfg["models"]
             saved_model = ss.get("model", "")
-            # Determine if saved model is a custom one (not in predefined list)
             is_custom_model = saved_model and saved_model not in p_cfg["models"]
             default_idx = 0 if is_custom_model else (
                 model_options.index(saved_model) if saved_model in model_options else 0
@@ -255,70 +257,142 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
                 model = st.text_input(
                     "自定义模型名称",
                     value=saved_model if is_custom_model else "",
-                    placeholder="输入模型名称，如 deepseek-v4-pro",
+                    placeholder="如 deepseek-v4-pro",
                     key="primary_model_custom",
                 )
             else:
                 model = model_choice
 
+            # DeepSeek thinking toggle
+            worker_thinking = True
+            if active_p == "DeepSeek":
+                worker_thinking = st.checkbox(
+                    "启用思考模式 (thinking)",
+                    value=ss.get("worker_thinking_enabled", True),
+                    key="worker_thinking_toggle",
+                    help="关闭后代码生成更快，但可能降低代码质量",
+                )
+
             st.divider()
 
-            # Fallback provider
-            st.markdown("**Fallback Provider** (optional)")
-            fallback_options = ["(disabled)"] + provider_names
-            saved_fallback = ss.get("fallback_provider", "(disabled)")
-            fallback_p = st.selectbox(
-                "Fallback 供应商",
-                fallback_options,
-                index=(fallback_options.index(saved_fallback) if saved_fallback in fallback_options else 0),
-                key="fallback_provider_sel",
-            )
-            fallback_api_key = ""
-            fallback_model = ""
-            if fallback_p != "(disabled)":
-                fb_cfg = DEFAULT_PROVIDERS[fallback_p]
-                fallback_api_key = st.text_input(
-                    "Fallback API Key",
-                    value=ss.get("api_keys", {}).get(fallback_p, ""),
+            # ------------------------------------------------------------------
+            # LLM-1: Router (intent classification — cheap/fast, optional)
+            # ------------------------------------------------------------------
+            st.markdown("### 🧭 Router (LLM-1) — 意图识别")
+            router_enabled = st.checkbox("独立配置 Router", value=bool(ss.get("router_provider", "")),
+                                         key="router_enabled",
+                                         help="启用后使用独立模型做意图分类；关闭则复用 Worker")
+            router_settings = None
+            if router_enabled:
+                rp = st.selectbox(
+                    "Router 供应商",
+                    provider_names,
+                    index=provider_names.index(ss.get("router_provider", active_p)),
+                    key="router_provider_sel",
+                )
+                rp_cfg = DEFAULT_PROVIDERS[rp]
+                rp_api_key = st.text_input(
+                    "Router API Key",
+                    value=ss.get("router_api_key", ""),
                     type="password",
-                    key="fallback_api_key",
+                    key="router_api_key",
                 )
-                fb_model_options = ["(自定义模型...)" ] + fb_cfg["models"]
-                fb_saved = ss.get("fallback_model", "")
-                fb_is_custom = fb_saved and fb_saved not in fb_cfg["models"]
-                fb_default_idx = 0 if fb_is_custom else (
-                    fb_model_options.index(fb_saved) if fb_saved in fb_model_options else 0
+                rp_model_sel = st.selectbox(
+                    "Router 模型",
+                    ["(自定义模型...)" ] + rp_cfg["models"],
+                    index=0,
+                    key="router_model_sel",
                 )
-                fb_model_choice = st.selectbox(
-                    "Fallback 模型",
-                    fb_model_options,
-                    index=fb_default_idx,
-                    key="fallback_model_sel",
-                )
-                if fb_model_choice == "(自定义模型...)":
-                    fallback_model = st.text_input(
-                        "自定义 Fallback 模型名称",
-                        value=fb_saved if fb_is_custom else "",
-                        placeholder="输入模型名称",
-                        key="fallback_model_custom",
+                if rp_model_sel == "(自定义模型...)":
+                    rp_model = st.text_input(
+                        "自定义 Router 模型",
+                        value=ss.get("router_model", ""),
+                        placeholder="如 qwen3.6-flash",
+                        key="router_model_custom",
                     )
                 else:
-                    fallback_model = fb_model_choice
+                    rp_model = rp_model_sel
+                st.caption("建议：轻量快速模型（qwen-plus / gpt-4o-mini / deepseek-chat）")
+            else:
+                rp = active_p
+                rp_cfg = p_cfg
+                rp_api_key = ""
+                rp_model = ""
+
+            st.divider()
+
+            # ------------------------------------------------------------------
+            # LLM-3: Reflection (audit + summary — reasoning-heavy, optional)
+            # ------------------------------------------------------------------
+            st.markdown("### 🔍 Reflection (LLM-3) — 审计+总结")
+            refl_enabled = st.checkbox("独立配置 Reflection", value=bool(ss.get("reflection_provider", "")),
+                                       key="reflection_enabled",
+                                       help="启用后使用强推理模型做审计和总结；关闭则复用 Worker")
+            if refl_enabled:
+                ref_p = st.selectbox(
+                    "Reflection 供应商",
+                    provider_names,
+                    index=provider_names.index(ss.get("reflection_provider", active_p)),
+                    key="reflection_provider_sel",
+                )
+                ref_cfg = DEFAULT_PROVIDERS[ref_p]
+                ref_api_key = st.text_input(
+                    "Reflection API Key",
+                    value=ss.get("reflection_api_key", ""),
+                    type="password",
+                    key="reflection_api_key",
+                )
+                ref_model_sel = st.selectbox(
+                    "Reflection 模型",
+                    ["(自定义模型...)" ] + ref_cfg["models"],
+                    index=0,
+                    key="reflection_model_sel",
+                )
+                if ref_model_sel == "(自定义模型...)":
+                    ref_model = st.text_input(
+                        "自定义 Reflection 模型",
+                        value=ss.get("reflection_model", ""),
+                        placeholder="如 gemini-3.1-pro-preview",
+                        key="reflection_model_custom",
+                    )
+                else:
+                    ref_model = ref_model_sel
+                st.caption("建议：强推理模型（deepseek-reasoner / qwen-max / gpt-4o / gemini-pro）")
+            else:
+                ref_p = active_p
+                ref_cfg = p_cfg
+                ref_api_key = ""
+                ref_model = ""
 
             if st.button("保存配置", use_container_width=True):
                 keys = ss.get("api_keys", {})
                 keys[active_p] = api_key
-                if fallback_p != "(disabled)":
-                    keys[fallback_p] = fallback_api_key
-                ss.save(
-                    {
-                        "active_provider": active_p,
-                        "api_keys": keys,
-                        "model": model,
-                        "fallback_provider": fallback_p,
-                        "fallback_model": fallback_model,
-                    }
-                )
+                payload = {
+                    "active_provider": active_p,
+                    "api_keys": keys,
+                    "model": model,
+                    "worker_thinking_enabled": worker_thinking,
+                }
+                if router_enabled and rp_api_key:
+                    keys[rp] = rp_api_key
+                    payload["router_provider"] = rp
+                    payload["router_model"] = rp_model
+                    payload["router_api_key"] = rp_api_key
+                else:
+                    payload["router_provider"] = ""
+                    payload["router_model"] = ""
+                    payload["router_api_key"] = ""
+                if refl_enabled and ref_api_key:
+                    keys[ref_p] = ref_api_key
+                    payload["reflection_provider"] = ref_p
+                    payload["reflection_model"] = ref_model
+                    payload["reflection_api_key"] = ref_api_key
+                else:
+                    payload["reflection_provider"] = ""
+                    payload["reflection_model"] = ""
+                    payload["reflection_api_key"] = ""
+                payload["api_keys"] = keys
+                ss.save(payload)
                 st.rerun()
 
         st.divider()
@@ -348,38 +422,41 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
             if st.button("Clear Trace Log", use_container_width=True):
                 if _TRACE_PATH.exists():
                     _TRACE_PATH.write_text("", encoding="utf-8")
-                # Reset session cost counters
                 for k in [
-                    "llm_call_count",
-                    "llm_retry_count",
-                    "llm_prompt_tokens",
-                    "llm_completion_tokens",
-                    "llm_cost_usd",
+                    "llm_call_count", "llm_retry_count",
+                    "llm_prompt_tokens", "llm_completion_tokens", "llm_cost_usd",
                 ]:
                     st.session_state[k] = 0
                 st.rerun()
 
-    # Build settings objects
-    primary_settings = _LLMS(
-        provider=active_p,
-        base_url=p_cfg["base_url"],
-        api_key=api_key,
-        model=model,
-        temperature=ss.get("temperature", 0.2),
+    # Build MultiLLMConfig
+    router_extra = None
+    worker_extra: dict | None = None
+    if active_p == "DeepSeek" and not worker_thinking:
+        worker_extra = {"thinking": {"type": "disabled"}}
+
+    worker_settings = _LLMS(
+        provider=active_p, base_url=p_cfg["base_url"], api_key=api_key,
+        model=model, temperature=ss.get("temperature", 0.2),
+        extra_body=worker_extra,
     )
 
-    fallback_settings: _LLMS | None = None
-    if fallback_p != "(disabled)" and fallback_api_key and fallback_model:
-        fb_cfg = DEFAULT_PROVIDERS[fallback_p]
-        fallback_settings = _LLMS(
-            provider=fallback_p,
-            base_url=fb_cfg["base_url"],
-            api_key=fallback_api_key,
-            model=fallback_model,
-            temperature=ss.get("temperature", 0.2),
+    router_settings = None
+    if router_enabled and rp_api_key and rp_model:
+        router_settings = _LLMS(
+            provider=rp, base_url=rp_cfg["base_url"], api_key=rp_api_key,
+            model=rp_model, temperature=0.0,
+            extra_body=router_extra,
         )
 
-    return primary_settings, fallback_settings
+    refl_settings = None
+    if refl_enabled and ref_api_key and ref_model:
+        refl_settings = _LLMS(
+            provider=ref_p, base_url=ref_cfg["base_url"], api_key=ref_api_key,
+            model=ref_model, temperature=0.0,
+        )
+
+    return _MConfig(router=router_settings, worker=worker_settings, reflection=refl_settings)
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +466,7 @@ def _sidebar_ui():  # returns (LLMSettings, LLMSettings | None)
 
 def main() -> None:
     _init_state()
-    settings, fallback_settings = _sidebar_ui()
+    llm_config = _sidebar_ui()
 
     st.title("ACE Agent")
     st.caption("基于 Orchestrator 架构的自愈式多代理聚类系统")
@@ -618,7 +695,7 @@ def main() -> None:
 
     _render_messages()
     if prompt := st.chat_input("输入指令，例如：使用谱聚类分析这个数据集..."):
-        _handle_prompt(prompt, ds_name, sc, noise, seed, settings, fallback_settings, uploaded_file)
+        _handle_prompt(prompt, ds_name, sc, noise, seed, llm_config, uploaded_file)
         st.rerun()
 
 
@@ -735,8 +812,7 @@ def _handle_prompt(
     sc: int,
     noise: float,
     seed: int,
-    settings,  # LLMSettings
-    fallback_settings,  # LLMSettings | None
+    llm_config,  # MultiLLMConfig
     uploaded_file,  # type: ignore[type-arg]
 ) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -751,7 +827,7 @@ def _handle_prompt(
     if "supervisor" not in st.session_state:
         st.session_state["supervisor"] = _get_supervisor()
     supervisor = st.session_state.supervisor
-    settings.deep_mode = st.session_state.get("deep_mode", False)
+    llm_config.get_worker().deep_mode = st.session_state.get("deep_mode", False)
 
     # Fresh session detection: if this is the first user message (only the
     # one we just appended), clear any leftover memory from a previous
@@ -777,10 +853,11 @@ def _handle_prompt(
 
             # Build router client with fallback support
             from ACE_Agent.tools.llm_client import UniversalLLMClient as _LLMC
-            router_client = _LLMC(settings, fallback_settings, caller="router")
+            router_settings = llm_config.get_router()
+            router_client = _LLMC(router_settings, None, caller="router")
             ds_label = _format_dataset_label(ds_name) if ds_name else ""
             intent = supervisor.router.analyze_intent(
-                prompt, supervisor.memory, settings, dataset_context=ds_label,
+                prompt, supervisor.memory, router_settings, dataset_context=ds_label,
                 client=router_client,
             )
             st.write(f"意图判定: **{intent.get('intent')}** ({intent.get('reasoning')})")
@@ -841,7 +918,7 @@ def _handle_prompt(
             report = supervisor.run(
                 dataset=dataset,
                 user_prompt=prompt,
-                llm_settings=settings,
+                llm_config=llm_config,
                 intent_data=intent,
                 progress_callback=_update_progress,
             )
@@ -860,7 +937,7 @@ def _handle_prompt(
         st.markdown(report.llm_summary or report.executive_summary)
         if report.response_type == "CLUSTER_TASK":
             _render_report(report)
-            _render_hitl_panel(report, supervisor, dataset, prompt, settings)
+            _render_hitl_panel(report, supervisor, dataset, prompt, llm_config)
             # ---- Export clustering result ---------------------------------
             _best = report.ranking[0] if report.ranking else None
             if _best is not None and hasattr(_best, "labels"):
@@ -1064,7 +1141,7 @@ def _render_report_summary(s: dict) -> None:
 
     best_ari = s.get("winner_ari", -1.0)
     top = ranking[0]
-    top_nmi = top.get("nmi", 0.0) if isinstance(top, dict) else 0.0
+    top_nmi = (top.get("nmi") or 0.0) if isinstance(top, dict) else 0.0
 
     c = st.columns(4)
     if best_ari >= 0 and best_ari < 0.2:
@@ -1264,7 +1341,7 @@ def _render_graph_metrics_card(top_metrics: dict, top_params: dict) -> None:
             )
 
 
-def _render_hitl_panel(report, supervisor, dataset, prompt, settings) -> None:
+def _render_hitl_panel(report, supervisor, dataset, prompt, llm_config) -> None:
     """Render HITL label correction panel for Phase 2.3.
 
     Shows the best result's cluster labels in an editable text area,
@@ -1316,7 +1393,7 @@ def _render_hitl_panel(report, supervisor, dataset, prompt, settings) -> None:
                 hitl_report = supervisor.run(
                     dataset=dataset,
                     user_prompt=prompt,
-                    llm_settings=settings,
+                    llm_config=llm_config,
                     constraints=constraints,
                 )
                 hitl_status.update(label="HITL 重分析完成", state="complete", expanded=False)

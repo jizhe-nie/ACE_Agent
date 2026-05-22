@@ -55,10 +55,38 @@ class LLMSettings:
     enabled: bool = True
     fast_audit: bool = False  # Phase 5.3: skip bootstrap, Hopkins + CVI only
     deep_mode: bool = False  # Phase 8: allow heavy AE/DEC pipelines on large data
+    extra_body: dict[str, Any] | None = None  # e.g. {"thinking": {"type": "disabled"}}
+    reasoning_effort: str | None = None  # e.g. "high", "max" (DeepSeek V4)
 
     @property
     def is_configured(self) -> bool:
         return self.enabled and bool(self.base_url.strip()) and bool(self.api_key.strip()) and bool(self.model.strip())
+
+
+@dataclass
+class MultiLLMConfig:
+    """Three-LLM configuration for ACE Agent pipeline stages.
+
+    Each field holds the LLMSettings for a specific role.  If a role is
+    ``None``, the caller should use the *worker* settings as fallback.
+    """
+
+    router: LLMSettings | None = None   # LLM-1: intent routing (cheap/fast)
+    worker: LLMSettings | None = None   # LLM-2: code generation (parallel)
+    reflection: LLMSettings | None = None  # LLM-3: audit + summary (reasoning-heavy)
+
+    def get_router(self) -> LLMSettings:
+        return self.router if self.router else self.get_worker()
+
+    def get_worker(self) -> LLMSettings:
+        if self.worker:
+            return self.worker
+        if self.reflection:
+            return self.reflection
+        return LLMSettings()
+
+    def get_reflection(self) -> LLMSettings:
+        return self.reflection if self.reflection else self.get_worker()
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +192,15 @@ class OpenAICompatibleProvider(LLMProvider):
         }
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
+
+        # Merge extra_body from settings (e.g. DeepSeek thinking control)
+        _eb = self._settings.extra_body
+        if _eb:
+            payload.update(_eb)
+
+        # DeepSeek V4 reasoning_effort control
+        if self._settings.reasoning_effort:
+            payload["reasoning_effort"] = self._settings.reasoning_effort
 
         response = requests.post(url, headers=headers, json=payload, timeout=kwargs.get("timeout", 90))
         response.raise_for_status()
