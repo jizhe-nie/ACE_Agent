@@ -1,0 +1,281 @@
+% ============================================================================
+% ACE Agent 学习指南 — 面向Python初学者的完整源码解析文档
+% 编译方式: xelatex -shell-escape ACE_Agent_Learning_Guide.tex
+% 环境要求: TeX Live 2023+ 或 Overleaf (XeLaTeX 编译器)
+% ============================================================================
+\documentclass[11pt,a4paper]{ctexbook}
+
+% ---------- 页面布局 ----------
+\usepackage[a4paper,margin=2.2cm,bottom=2.5cm,headheight=14pt]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% ---------- 图表与颜色 ----------
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, shapes.multipart, calc, fit, backgrounds, decorations.pathreplacing}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable, listings}
+
+% ---------- 代码展示 ----------
+\usepackage{minted}
+\setminted[python]{
+    fontsize=\footnotesize,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numbersep=5pt,
+    baselinestretch=1.0,
+    bgcolor=lightgray!10,
+    tabsize=4,
+    encoding=utf8,
+}
+\definecolor{lightgray}{RGB}{248,248,248}
+
+% ---------- 超链接 ----------
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=teal,
+    citecolor=blue!70!black,
+}
+
+% ---------- 标题定制 ----------
+\usepackage{titlesec}
+\titleformat{\chapter}[hang]{\Huge\bfseries}{\thechapter\ }{0pt}{\Huge\bfseries}
+\titleformat{\section}[hang]{\LARGE\bfseries}{\thesection\ }{0pt}{\LARGE\bfseries}
+
+% ---------- 页眉页脚 ----------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[LO]{\nouppercase{\leftmark}}
+\fancyhead[RE]{\nouppercase{\rightmark}}
+\renewcommand{\headrulewidth}{0.5pt}
+
+% ---------- 定制盒子 ----------
+\newtcolorbox[auto counter]{reviewbox}{
+    enhanced, breakable,
+    colback=blue!5, colframe=blue!30!black,
+    title={\textbf{本章回顾}} ,
+    fonttitle=\bfseries,
+    attach boxed title to top left={xshift=4mm,yshift=-3mm},
+    boxed title style={size=small, colback=blue!30!black},
+    before upper={\textbf{自测题：}\par},
+}
+
+\newtcolorbox[auto counter]{plainbox}{
+    enhanced, breakable,
+    colback=yellow!5, colframe=yellow!50!black,
+    title={\textbf{白话总结}} ,
+    fonttitle=\bfseries,
+    attach boxed title to top left={xshift=4mm,yshift=-3mm},
+    boxed title style={size=small, colback=yellow!50!black},
+}
+
+\newtcolorbox{notebox}{
+    enhanced, breakable,
+    colback=green!5, colframe=green!40!black,
+    title={\textbf{⚠️ 常见错误}} ,
+    fonttitle=\bfseries,
+}
+
+\newtcolorbox{tipbox}{
+    enhanced, breakable,
+    colback=orange!5, colframe=orange!40!black,
+    title={\textbf{调试技巧}} ,
+    fonttitle=\bfseries,
+}
+
+% ---------- 文档信息 ----------
+\title{\textbf{ACE Agent 源码完全解析}\\ —— 从零开始的Python多智能体系统学习指南}
+\author{ACE 开发团队 \\ 文档生成: AI编程助手}
+\date{2026年5月18日 \\ 版本: v5.0 (Modality \& Self-Healing 2.0)}
+
+\begin{document}
+
+% ============================================================================
+% 封面
+% ============================================================================
+\maketitle
+
+\thispagestyle{empty}
+\begin{center}
+    \vspace{4cm}
+    \Large\textbf{适用读者}\\[0.5cm]
+    \normalsize
+    Python 初学者（已掌握基本语法，希望理解中等规模项目的架构）\\
+    数据科学入门者（对聚类分析感兴趣）\\
+    对 AI Agent / LLM 应用开发感兴趣的工程师\\[2cm]
+
+    \textbf{前置知识}\\[0.5cm]
+    Python 基础（函数、类、模块导入）\\
+    了解 NumPy/Pandas 基本操作\\
+    了解机器学习基本概念（非必须，文档会解释）\\[2cm]
+
+    \textbf{项目环境}\\[0.5cm]
+    Conda 环境: \texttt{Tumor\_Subtype\_Agent}\\
+    Python 3.10+\\
+    依赖: streamlit, numpy, pandas, matplotlib, scikit-learn, torch, chromadb
+\end{center}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ============================================================================
+% 第1章：项目功能简介
+% ============================================================================
+\chapter{项目功能简介}
+
+\section{ACE Agent 是什么？}
+
+\textbf{ACE Agent}（Automated Clustering Expert，自动化聚类专家）是一个\textbf{多智能体自主聚类分析系统}。
+它把\textbf{大语言模型（LLM）}作为"大脑"，将数据科学中繁琐的聚类分析流程完全自动化。
+
+本次 v5.0 更新的核心是 \textbf{多模态感知 (Modality Awareness)}。这意味着系统不再只会用"一把尺子（欧氏距离）"量所有数据，而是能根据数据的物理特性自动切换度量标准。
+
+简单来说，你只需要：
+\begin{enumerate}
+    \item 上传一份数据（如一段心音信号的频谱、一组路透社新闻文本）
+    \item ACE Agent 会自动识别："哦，这是时序数据" 或 "这是稀疏文本"
+    \item 系统会自动切换度量衡：时序用 \textbf{DTW 距离}，文本用 \textbf{余弦相似度}
+    \item 最终产出一份在正确物理空间内审计过的学术报告
+\end{enumerate}
+
+\begin{plainbox}
+    就像医生看病。如果 ACE 只懂欧氏距离，就像只会量身高的医生；现在 ACE 懂多模态，就像懂验血、拍片、听诊的全科专家，能针对不同病症（模态）用不同的检查手段（度量衡）。
+\end{plainbox}
+
+\section{核心亮点 (v5.0)}
+
+\begin{longtable}{p{4cm} p{9cm}}
+    \toprule
+    \textbf{亮点} & \textbf{说明} \\
+    \midrule
+    \textbf{ModalityProfile} & 自动检测 Tabular/Text/Image/TimeSeries，绑定专属度量标准 \\
+    \midrule
+    \textbf{自愈机制 2.0} & 引入负向优化检测，若修复导致精度大幅下降，自动回滚至上个版本 \\
+    \midrule
+    \textbf{自适应审计空间} & 审计专家根据维度动态调整 PCA 压缩比，保留更多流形信息 \\
+    \midrule
+    \textbf{沙箱武器库增强} & 预注入 UMAP、t-SNE、TimeSeriesKMeans，专家代码无需 import \\
+    \bottomrule
+\end{longtable}
+
+\begin{reviewbox}
+    \begin{enumerate}
+        \item 为什么对于 4000 维的文本数据，用欧氏距离做聚类排名通常不可靠？
+        \item 什么是"自愈回滚"？它解决了自愈过程中的什么风险？
+    \end{enumerate}
+\end{reviewbox}
+
+% ============================================================================
+% 第2章：多模态感知架构
+% ============================================================================
+\chapter{多模态感知架构}
+
+\section{ModalityProfile：数据的身份证}
+
+在 \texttt{schemas.py} 中，我们定义了 \texttt{ModalityProfile}。它是系统识别数据的"第一张多米诺骨牌"。
+
+\begin{minted}{python}
+@dataclass
+class ModalityProfile:
+    modality_type: str        # "tabular", "text", "image", "time_series"
+    distance_metric: str      # "euclidean", "cosine", "dtw"
+    l2_normalize: bool        # 是否需要 L2 归一化
+    dim_reduction_hint: str   # "pca", "truncated_svd", "umap"
+\end{minted}
+
+\section{如何自动检测模态？}
+
+在 \texttt{detect\_modality()} 函数中，系统执行以下逻辑：
+\begin{enumerate}
+    \item \textbf{Text 检测}：若 $D > 500$ 且矩阵稀疏度（Sparse Ratio）极高，判为 \texttt{text} $\rightarrow$ \texttt{cosine}。
+    \item \textbf{TimeSeries 检测}：若元数据包含 \texttt{ts\_shape} 或 $D > 100$ 且特征名符合时序规律，判为 \texttt{time\_series} $\rightarrow$ \texttt{dtw\_hint}。
+    \item \textbf{Image 检测}：通过因数分解（如 4032 $\rightarrow$ 32×42×3）尝试拼出图像。
+\end{enumerate}
+
+\begin{tipbox}
+    当你上传心音频谱时，系统看到 4032 维，会提示检测到图像。这其实是因为 4032 可以分解为 32x42x3。虽然是误报，但它建议的 CNN 特征提取方案对频谱图依然是最佳实践。
+\end{tipbox}
+
+% ============================================================================
+% 第3章：自愈机制与审计闭环
+% ============================================================================
+\chapter{自愈机制与审计闭环}
+
+\section{Think-Act-Fix 2.0：防范"越修越差"}
+
+早期的自愈逻辑只要代码不报错就算赢。但在 v5.0 中，我们在 \texttt{BaseExpert} 引入了精度检查。
+
+\begin{minted}{python}
+# 负向优化拦截逻辑
+if _first_success_ari is not None:
+    _ari_drop = _first_success_ari - _this_batch_ari
+    if _ari_drop > 0.03:
+        # 警告：修复代码虽然跑通了，但准确率跌了
+        # 撤销本次修复，回滚代码
+        code = _best_code_from_attempts
+\end{minted}
+
+\section{自适应审计维度}
+
+审计专家 (Critic) 不能在 4000 维上直接审计（太慢且不稳定），也不能死板地压到 16 维（丢信息太多）。
+ACE 采用了动态目标维度：
+\begin{equation}
+D_{audit} = \text{max}(16, \text{min}(32, N_{features} / 4))
+\end{equation}
+
+\begin{reviewbox}
+    \begin{enumerate}
+        \item 审计维度上限设为 32 的目的是什么？
+        \item 为什么文本聚类排名时要将距离度量从默认的 'euclidean' 换成 'cosine'？
+    \end{enumerate}
+\end{reviewbox}
+
+% ============================================================================
+% 第4章：代码沙箱的"兵器库"
+% ============================================================================
+\chapter{代码沙箱的"兵器库"}
+
+\section{武器预注入 (CORE\_PRE\_INJECT)}
+
+为了防止 LLM 忘记 \texttt{import} 或写错包名，沙箱在启动前就将 40 多个常用的类和函数塞进了全局变量。
+
+\begin{itemize}
+    \item \textbf{降维类}：\texttt{PCA}, \texttt{UMAP}, \texttt{TSNE}, \texttt{TruncatedSVD} (文本必备)。
+    \item \textbf{聚类类}：\texttt{KMeans}, \texttt{HDBSCAN}, \texttt{TimeSeriesKMeans} (时序必备)。
+    \item \textbf{度量类}：\texttt{silhouette\_score}, \texttt{cosine\_similarity}。
+\end{itemize}
+
+\section{资源熔断策略}
+
+\begin{itemize}
+    \item \textbf{内存限额}：监控 RSS 增量。如果你生成的代码尝试开一个 $70,000 \times 70,000$ 的浮点矩阵，沙箱会瞬间将其斩断，抛出 \texttt{SandboxResourceExceeded}。
+    \item \textbf{超时保护}：对于 MNIST 70k 数据，超时自动放宽到 240s，给深度管线足够的训练时间。
+\end{itemize}
+
+\section{附录：术语表更新}
+
+\begin{longtable}{p{3cm} p{10cm}}
+    \toprule
+    \textbf{术语} & \textbf{解析} \\
+    \midrule
+    \textbf{L2 Normalize} & 特征向量归一化。在归一化空间中，欧氏距离等效于余弦距离。 \\
+    \midrule
+    \textbf{TruncatedSVD} & 截断奇异值分解。处理稀疏文本矩阵的首选降维方法，优于 PCA。 \\
+    \midrule
+    \textbf{Self-Healing} & 自愈。系统能够自动捕获代码报错，利用 LLM 理解错误并重写代码。 \\
+    \bottomrule
+\end{longtable}
+
+\end{document}

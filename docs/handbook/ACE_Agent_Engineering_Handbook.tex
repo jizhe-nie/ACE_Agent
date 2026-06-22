@@ -1,0 +1,319 @@
+% ===================================================================
+% ACE Agent Engineering Handbook
+% 版本: 5.0 (2026-05-18, Phase 4.1 Modality + All Experts Deep Dive)
+% 编译: xelatex -shell-escape ACE_Agent_Engineering_Handbook.tex
+% ===================================================================
+\documentclass[12pt,a4paper]{article}
+
+% ---------- 中文支持 ----------
+\usepackage{ctex}
+\setCJKmainfont{SimSun}[BoldFont=SimHei,ItalicFont=KaiTi]
+\setmonofont{Consolas}
+
+% ---------- 页面布局 ----------
+\usepackage[a4paper,margin=2.5cm,headheight=14.5pt]{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc}
+
+% ---------- 代码高亮 ----------
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!5},
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    showstringspaces=false,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+}
+
+% ---------- 页眉页脚 ----------
+\pagestyle{fancy}
+\fancyhead[L]{ACE Agent Engineering Handbook}
+\fancyhead[R]{v5.0}
+\fancyfoot[C]{\thepage}
+
+% ---------- 标题 ----------
+\title{
+    \textbf{ACE Agent}\\[4pt]
+    \large 自愈多智能体自主聚类分析系统\\[6pt]
+    \Large 核心架构与功能实现手册\\[12pt]
+    \normalsize 版本 5.0 — 2026年5月18日\\
+    \normalsize (Phase 4.1 Modality-Aware \& Deep Pipeline)
+}
+\author{ACE Agent Engineering Team}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ===================================================================
+\section{摘要}
+
+ACE Agent (\textbf{A}utomated \textbf{C}lustering \textbf{E}xpert) 是一个深度融合了 \textbf{LLM 推理} 与 \textbf{传统/深度机器学习} 的自主探索系统。本手册版本 5.0 详细解析了系统从“模态感知识别”到“多专家协同执行”再到“自适应闭环审计”的每一处实现细节。
+
+\textbf{关键进化路径}:
+\begin{itemize}[nosep]
+    \item \textbf{v1.0-3.0}: 建立 Orchestrator 架构，实现基础自愈。
+    \item \textbf{v3.2-4.0}: 引入图社区发现专家与 70k 样本极限性能优化。
+    \item \textbf{v4.1-5.0}: \textbf{多模态感知 (Modality Awareness)}。系统不再盲目使用欧氏距离，而是能根据数据属性（时序、文本、图像）自动切换度量空间（Cosine/DTW）与审计逻辑。
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{项目目录结构与文件说明}
+
+为了让新开发者能够快速定位功能并理解系统全貌，本节对 ACE Agent 的物理目录结构及核心文件职责进行全量映射。
+
+\subsection{根目录结构}
+\begin{itemize}[nosep]
+    \item \texttt{web\_demo.py}: 系统的 Web UI 入口文件，基于 Streamlit 构建，负责处理用户交互、数据上传、流式日志渲染及可视化展示。
+    \item \texttt{pyproject.toml} / \texttt{requirements.txt}: 项目依赖管理文件。
+\end{itemize}
+
+\subsection{agent\_core/ (系统大脑)}
+此目录包含系统的核心编排层与数据契约，负责任务的调度与宏观决策。
+\begin{itemize}[nosep]
+    \item \texttt{supervisor.py}: \textbf{绝对核心 (ACESupervisor)}。管理整个从意图识别到最终报告产出的流水线。包含多级门禁（Hopkins、缓存）、动态沙箱限流逻辑以及处理专家集成的核心业务。
+    \item \texttt{router.py}: \textbf{意图识别 (MasterRouter)}。利用 LLM 解析用户 Prompt，决定是执行新任务 (\texttt{NEW\_TASK})、回答问题 (\texttt{FOLLOW\_UP}) 还是仅提供代码示例 (\texttt{CODE\_EXAMPLE})。
+    \item \texttt{schemas.py}: \textbf{数据契约}。定义了跨模块流转的核心数据类，如 \texttt{DatasetBundle}（携带数据与元数据）和 \texttt{ModalityProfile}（模态特征、降维策略、度量标准）。此文件中的 \texttt{detect\_modality()} 函数是多模态感知的源头。
+\end{itemize}
+
+\subsection{expert\_sub\_agents/ (专家代理池)}
+此目录包含实际生成 Python 代码并负责聚类的独立 AI Agent。
+\begin{itemize}[nosep]
+    \item \texttt{base.py}: 所有专家的抽象基类 (\texttt{BaseExpert})。实现了 \textbf{Think-Act-Fix 2.0} 闭环（代码生成、沙箱执行、捕获报错、反馈重试、负向优化拦截）。
+    \item \texttt{dimension\_expert.py}: \textbf{维度专家}。负责处理高维数据。通过 LLM 决策，选择 PCA、UMAP 或各种深度自编码器 (AE/DEC) 降维管线。
+    \item \texttt{graph\_expert.py}: \textbf{图专家}。处理非凸/复杂流形数据。抛弃欧氏距离，构建 Wall-aware k-NN 图，并执行 Louvain、MCL 等社区发现算法。
+    \item \texttt{critic\_expert.py}: \textbf{审计专家 (Critic 2.0)}。事后“大法官”。在自适应空间内执行 Hopkins、DBCV、Bootstrap 稳定性等交叉验证，并有权下达 \texttt{RETRY} 指令强制要求重试。
+    \item \texttt{ensemble\_expert.py}: \textbf{集成专家}。基于共协矩阵 (Co-association Matrix) 融合多个专家的聚类标签，包含 Monte Carlo 采样熔断机制以应对极大规模数据。
+    \item \texttt{centroid\_expert.py} / \texttt{topology\_expert.py} / \texttt{zoo\_expert.py}: 分别负责质心类 (KMeans等)、密度/拓扑类 (DBSCAN等) 及全量泛化算法的执行。
+\end{itemize}
+
+\subsection{tools/ (基础设施与沙箱)}
+此目录为整个智能体系统提供底层安全执行环境和辅助工具。
+\begin{itemize}[nosep]
+    \item \texttt{coder\_sandbox.py}: \textbf{安全沙箱}。拦截危险模块 (\texttt{os.system} 等)，监控内存 (RSS增量)，控制动态超时。其中的 \texttt{CORE\_PRE\_INJECT} 提前注入了所有核心算法（UMAP, TSNE 等），免除代码 \texttt{import} 烦恼。
+    \item \texttt{data\_factory.py}: \textbf{数据工厂}。负责加载内置的基准数据集或解析用户上传的文件。它会进行初步的数据画像（如图像尺寸推算）与大样本降采样保护。
+    \item \texttt{settings\_store.py}: \textbf{配置与状态管理}。实现 LLM 接口秘钥的安全管理及会话持久化。其中的 \texttt{SessionManager} 包含**递归瘦身算法**，自动剥离无用的 $X, y$ 数组以防日志文件膨胀。
+    \item \texttt{llm\_client.py}: 统一封装了对接各大 LLM 供应商 (OpenAI, DeepSeek, Anthropic) 的请求接口与 Token 计量功能。
+    \item \texttt{ae\_pipeline.py} / \texttt{dec\_pipeline.py}: \textbf{深度聚类管线}。存放自编码器 (AE) 与深度嵌入聚类 (DEC) 的纯算法实现（使用 PyTorch），供维度专家直接调用。
+\end{itemize}
+
+\subsection{其他重要目录}
+\begin{itemize}[nosep]
+    \item \texttt{benchmark/}: 包含自动化批量测试系统，用于在变更代码后，一键回归测试数十个数据集。
+    \item \texttt{docs/handbook/}: 存放您正在阅读的这套《工程说明书》与《源码完全解析》LaTeX 源文件及编译后的 PDF。
+    \item \texttt{outputs/}: 规范化的唯一合法输出路径。所有运行过程中生成的中间图片、日志轨迹 (\texttt{llm\_trace.jsonl})、及评估报告均存放于此。
+\end{itemize}
+
+\newpage
+
+\newpage
+
+% ===================================================================
+\section{数据生命周期与全流程调度}
+
+本节详细解析一份原始数据进入 ACE Agent 后的“生命旅程”。系统并非盲目运行算法，而是根据数据的“生理特征”（维度、模态、分布）进行精细化的分流处理。
+
+\subsection{调度流程全景图}
+
+数据在系统中的流转遵循以下标准路径：
+
+\begin{enumerate}[nosep]
+    \item \textbf{智能分诊 (Profiling)}：
+    \begin{itemize}
+        \item \texttt{detect\_modality()}：鉴定数据物种（表格、文本、图像、时序）。
+        \item \texttt{fast\_hopkins()}：评估聚类倾向。若 $H < 0.3$，发出“随机噪声”预警并限制专家规模。
+        \item \texttt{\_downsample\_dataset()}：若 $N > 30,000$，执行分层采样以保护系统资源。
+    \end{itemize}
+    \item \textbf{策略画像 (Strategy Mapping)}：
+    \begin{itemize}
+        \item 计算测地线失真（Geodesic Distortion）。若数据存在显著流形结构，强制激活 \texttt{GraphExpert}。
+        \item 高维门禁：若 $D > 200$，自动在所有专家前置 PCA 预处理逻辑。
+    \end{itemize}
+    \item \textbf{并行会诊 (Expert Execution)}：
+    \begin{itemize}
+        \item 调度各领域专家在安全沙箱中并行生成并执行 Python 代码。
+        \item 触发 Think-Act-Fix 2.0 闭环，实现语法与逻辑的实时自愈。
+    \end{itemize}
+    \item \textbf{华山论剑 (Ranking)}：
+    \begin{itemize}
+        \item 采用 \textbf{ARI 一票否决制}。在有标签场景下，彻底无视内部指标，只看与真相的吻合度。
+    \end{itemize}
+    \item \textbf{最高法院裁决 (Audit \& Ensemble)}：
+    \begin{itemize}
+        \item 审计专家切入优胜算法的特征空间，进行 Bootstrap 稳定性与拓扑连通性审计。
+        \item 若审计结果为 \texttt{WARN}，触发集成专家进行共识救助。
+    \end{itemize}
+\end{enumerate}
+
+\subsection{分流处理逻辑矩阵}
+
+系统根据输入特征自动切换专家调用方案及度量标准：
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{@{}llllp{4cm}@{}}
+\toprule
+\textbf{模态} & \textbf{维度特点} & \textbf{度量标准} & \textbf{首选专家} & \textbf{核心方法/管线} \\
+\midrule
+\textbf{文本} & 高维, 极度稀疏 & \texttt{cosine} & 维度专家 & TruncatedSVD $\rightarrow$ KMeans \\
+\textbf{图像} & 原始像素, 强空间相关 & \texttt{euclidean} & 维度专家 & SelfLabel / Conv-AE / UMAP \\
+\textbf{时序} & 具有时间轴连续性 & \texttt{dtw} & 质心专家 & TimeSeriesKMeans (DTW) \\
+\textbf{流形} & 非凸, 弯曲结构 & \texttt{geodesic} & 图专家 & Louvain / MCL / HDBSCAN \\
+\textbf{表格} & 低维, 结构化 & \texttt{euclidean} & 质心专家 & KMeans / GMM / Birch \\
+\bottomrule
+\end{tabular}
+\caption{ACE Agent 多模态分流处理矩阵}
+\end{table}
+
+\subsection{专家调度状态机}
+
+当数据特征触发特定条件时，ACE Agent 会自动激活隐藏管线：
+
+\begin{itemize}
+    \item \textbf{低 ARI 救助 (Rescue)}：当全量算法专家 (ZooExpert) 的最佳 ARI $< 0.2$ 时，系统判定欧氏空间失效，自动激活 \textbf{Geodesic Pipeline}，尝试 UMAP 投影后的图社区发现。
+    \item \textbf{空间对齐审计}：若优胜者是 \texttt{UMAP\_KMeans}，审计专家会自动检测到 \texttt{embedding\_path}，放弃原始高维空间，转而在 2D 嵌入空间内复核簇的物理可分性。
+    \item \textbf{大样本熔断}：当 $N > 5,000$ 时，集成专家自动禁用 $O(N^2)$ 的共协矩阵构建，切换为 Monte Carlo 随机对采样。
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{核心编排逻辑 (agent\_core/)}
+
+\subsection{主控器 ACESupervisor}
+
+\texttt{supervisor.py} 是系统的中枢神经。其 \texttt{run()} 方法定义了标准流水线：
+
+\begin{enumerate}[nosep]
+    \item \textbf{意图路由 (\texttt{MasterRouter})}: 判定任务类型 (NEW\_TASK / FOLLOW\_UP / CODE\_EXAMPLE)。
+    \item \textbf{模态检测 (\texttt{detect\_modality})}: 生成 \texttt{ModalityProfile}。
+    \item \textbf{结构分类 (\texttt{\_classify\_data\_structure})}: 计算 Geodesic Distortion，识别流形/非凸/图结构。
+    \item \textbf{计算门禁}:
+    \begin{itemize}
+        \item \textbf{结果缓存}: 若 \texttt{.ace\_result\_cache.json} 命中且代码版本一致，直接返回。
+        \item \textbf{Hopkins 预检}: 若 $H < 0.3$，跳过昂贵的拓扑专家。
+        \item \textbf{高维门禁}: 若 $D > 200$，强制 PCA 预处理（保留 95\% 方差）。
+    \end{itemize}
+    \item \textbf{专家调度}: 并行运行 \texttt{execute\_with\_self\_correction()}。
+    \item \textbf{结果排名}: 采用 \textbf{ARI 一票否决制}。
+    \item \textbf{自愈闭环}: \texttt{CriticExpert} 审计 $\rightarrow$ \texttt{RETRY} (带约束)。
+\end{enumerate}
+
+\subsection{数据模型与模态契约}
+
+\texttt{schemas.py} 定义了跨模块流转的标准协议：
+\begin{itemize}
+    \item \textbf{\texttt{ModalityProfile}}: 记录 \texttt{modality\_type} (tabular/text/image/time\_series)、\texttt{distance\_metric}、\texttt{l2\_normalize} 标志及 \texttt{dim\_reduction\_hint}。
+    \item \textbf{\texttt{AlgorithmRunResult}}: 包含 labels、metrics、执行的 code 源码、以及 \texttt{embedding\_path}（供审计对齐空间）。
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{专家系统实现 (expert\_sub\_agents/)}
+
+\subsection{自愈框架 BaseExpert}
+
+所有专家的基类。其 \texttt{execute\_with\_self\_correction()} 方法实现了 \textbf{Think-Act-Fix 2.0} 循环：
+
+\begin{itemize}
+    \item \textbf{负向优化检测}: 若重试后的 ARI 相比首次成功下降超过 0.03，系统会判定修复导致了精度折损，自动回退到首次成功的代码版本。
+    \item \textbf{软失败捕获}: 若代码运行成功但未对 \texttt{artifacts} 字典赋值，系统会识别为“空结果”，并向 LLM 注入“必须写入 artifacts”的硬指令。
+\end{itemize}
+
+\subsection{维度专家 DimensionExpert}
+
+采用 \textbf{Skeleton-Decision 混合模型}。LLM 不直接写代码，而是产出 JSON 决策，选择 7 种管线之一：
+\begin{enumerate}[nosep]
+    \item \textbf{PCA\_KMeans / PCA\_GMM}: 经典管线。
+    \item \textbf{UMAP\_KMeans}: 处理流形数据的首选。
+    \item \textbf{SelfLabel}: 图像聚类王牌。Conv-AE 预训练 + GMM 伪标签蒸馏。
+    \item \textbf{DEC / IDEC}: 联合优化聚类分配与自编码器权重。
+    \item \textbf{ResAE\_KMeans}: 专为 GAP/语义嵌入特征设计的残差注意力自编码器。
+\end{enumerate}
+
+\subsection{图专家 GraphExpert}
+
+Phase 3.2 完全重写。核心逻辑不再是坐标聚类，而是**原生图论分区**。
+\begin{itemize}
+    \item \textbf{Wall-Aware 构图}: 结合 Mutual kNN、局部缩放（Local Scaling）和 Jaccard 剪枝。
+    \item \textbf{社区发现算法池}: Louvain、MCL (Markov Cluster)、Label Propagation、谱图分割。
+    \item \textbf{Modularity 优选}: 自动选择模块度最高的图划分结果。
+\end{itemize}
+
+\subsection{审计专家 CriticExpert}
+
+由并行投票者转变为“独立大法官”。其 \texttt{execute\_audit()} 具有**空间感知力**:
+\begin{itemize}
+    \item \textbf{自适应审计维度}: 根据公式 $D = \max(16, \min(32, N/4))$ 动态设定 PCA 审计空间。
+    \item \textbf{空间对齐}: 若优胜算法产生了嵌入空间（如 UMAP 后的 2D），审计员会自动加载该嵌入文件，在同一空间内进行复核。
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{安全沙箱与执行环境 (tools/)}
+
+\subsection{代码沙箱 CoderSandbox}
+
+\texttt{coder\_sandbox.py} 提供了受限的 Python 执行环境：
+\begin{itemize}
+    \item \textbf{资源守卫}: \texttt{\_MemoryWatchdog} 监控 **RSS 增量**（而非绝对值），默认 2GB 限制。
+    \item \textbf{自适应超时}: 根据样本量动态调整（60s $\rightarrow$ 240s）。
+    \item \textbf{武器库注入 (\texttt{CORE\_PRE\_INJECT})}: 预注入了 UMAP、TSNE、TimeSeriesKMeans 等 40+ 个常用类，LLM 代码无需 \texttt{import} 即可使用。
+    \item \textbf{安全拦截}: 拦截 \texttt{os.system}、\texttt{subprocess}、\texttt{pickle} 等高危模块及文件操作。
+    \item \textbf{持久化管理}: \texttt{.ace\_sessions.json} 会话历史。
+\end{itemize}
+
+\subsection{数据工厂 DataFactory}
+
+\texttt{data\_factory.py} 实现了数据特征的自动画像：
+\begin{itemize}
+    \item \textbf{图像形状分解}: 通过因数分解推断 4032 维是否对应 32$\times$42$\times$3 图像。
+    \item \textbf{分层抽样}: 当 $N > 30,000$ 时触发 \texttt{StratifiedShuffleSplit}，在保持类别比例的前提下缩减规模以保护沙箱资源。
+\end{itemize}
+
+\newpage
+
+% ===================================================================
+\section{附录：开发者指南}
+
+\subsection{新增一个专家代理}
+1. 继承 \texttt{BaseExpert}。
+2. 在子类中配置 \texttt{PRE\_INJECT} 注入所需的第三方库。
+3. 实现 \texttt{\_generate\_code()}，确保生成的代码遵循 \texttt{artifacts['labels']} 写入契约。
+4. 在 \texttt{expert\_sub\_agents/\_\_init\_\_.py} 注册。
+
+\subsection{运行环境要求}
+\begin{lstlisting}[language=bash]
+conda activate Tumor_Subtype_Agent
+pip install hdbscan sentence-transformers umap-learn tslearn
+streamlit run web_demo.py
+\end{lstlisting}
+
+\subsection{路线图 (Next Steps)}
+\begin{itemize}[nosep]
+    \item \textbf{Phase 8}: 异构多 LLM 协作 (Debate 模式)。
+    \item \textbf{Phase 9}: Contrastive Clustering (对比学习) 管线集成。
+\end{itemize}
+
+\end{document}

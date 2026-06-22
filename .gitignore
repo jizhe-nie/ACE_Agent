@@ -31,6 +31,8 @@ plots/*
 *.toc
 *.synctex.gz
 _minted/
+docs/handbook/build/
+docs/handbook/*.pdf
 
 # Type checker cache
 .mypy_cache/
@@ -42,8 +44,10 @@ _minted/
 # Environment
 .env
 
-# Benchmark cache (large datasets)
-benchmark_cache/mnist_full_*.npy
+# Large datasets, downloaded corpora & generated feature caches (not source)
+data/
+cluster_data/
+benchmark_cache/
 
 # ChromaDB runtime
 agent_brain/memory_vdb/chroma.sqlite3

@@ -18,7 +18,7 @@ streamlit run web_demo.py
 pytest tests/test_benchmark.py -q
 
 # Run quick benchmark on a specific dataset
-python _bench_70k_v4.py
+python scripts/experiments/_bench_70k_v4.py
 
 # Run system integration tests
 pytest tests/test_system_integration.py -q
