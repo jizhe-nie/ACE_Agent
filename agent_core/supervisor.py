@@ -36,10 +36,10 @@ class ACESupervisor:
 
     P0.5 变更（2026-04-20）：
     - 专家注册表改用 build_expert_registry()，包含 zoo 专家（含 DBSCAN/HDBSCAN）。
-    - 默认激活策略：centroid + topology + zoo（三家并行）。
-    - dimension / deep_representation 已注册但默认不激活；
-    - Critic 重构为后验审计方（2026-04-29）：从并行池移除，在选出最优结果后
-      独立运行 _execute_audit()，输出结构化 audit_report，不参与排名。
+    - 默认激活策略：centroid + topology + zoo（串行派发，非并发）。
+    - dimension 已注册，特征维度 >2 时自动激活；deep_representation 已删除（2026-06-22）。
+    - Critic 重构为后验审计方（2026-04-29）：从派发池移除，在选出最优结果后
+      独立运行 reflection.execute_audit()，输出结构化 audit_report，不参与排名。
     - 新增 CODE_EXAMPLE 分流路径（只返回代码 Markdown，不走沙箱）。
     - 每个专家执行用 try/except 包裹，异常转为日志不中断编排。
     - _error_report 增强：汇总每个专家最后 3 行日志作为排错依据。
@@ -1140,23 +1140,6 @@ class ACESupervisor:
         return report
 
     # ------------------------------------------------------------------
-    # 后验审计
-    # ------------------------------------------------------------------
-
-    def _execute_audit(
-        self,
-        winner: AlgorithmRunResult,
-        dataset: DatasetBundle,
-        settings: LLMSettings,
-        trace: list[str],
-        modality: ModalityProfile | None = None,
-    ) -> dict[str, Any] | None:
-        return reflection.execute_audit(
-            self.experts.get("critic"), winner, dataset, settings, trace,
-            modality=modality,
-        )
-
-    # ------------------------------------------------------------------
     # Critic 2.0 反馈闭环
     # ------------------------------------------------------------------
 
@@ -1244,111 +1227,6 @@ class ACESupervisor:
         except Exception as exc:
             trace.append(f"【集成】共识融合异常: {exc}")
             return None
-
-    # ------------------------------------------------------------------
-    # Data structure classification (Phase 3 Topology-Aware)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _classify_data_structure(
-        dataset: DatasetBundle,
-        *,
-        modality: ModalityProfile | None = None,
-    ) -> dict[str, Any]:
-        return preflight.classify_data_structure(dataset, modality=modality)
-
-    # ------------------------------------------------------------------
-    # Phase 5.2: Geometric connectivity pre-check
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _connectivity_pre_check(
-        dataset: DatasetBundle,
-        trace: list[str],
-        *,
-        modality: ModalityProfile | None = None,
-    ) -> dict[str, Any]:
-        return preflight.connectivity_pre_check(dataset, trace, modality=modality)
-
-    # ------------------------------------------------------------------
-    # Compute best ARI across a ranking (for dashboard warning)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_best_ari(
-        ranking: list[AlgorithmRunResult],
-        dataset: DatasetBundle,
-    ) -> float | None:
-        return _ranking.compute_best_ari(ranking, dataset)
-
-    # ------------------------------------------------------------------
-    # Phase 3.1: Topology failure detection for maze connectivity mode
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _check_topology_failure(
-        dataset: DatasetBundle,
-        result: AlgorithmRunResult,
-        trace: list[str],
-    ) -> dict[str, Any] | None:
-        return _ranking.check_topology_failure(dataset, result, trace)
-
-    # ------------------------------------------------------------------
-    # Image semantic detection (Phase 5.4)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_image_data(dataset: DatasetBundle) -> str | None:
-        return preflight.detect_image_data(dataset)
-
-    # ------------------------------------------------------------------
-    # Topology / Manifold detection & preprocessing (Phase 2.4)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_manifold_topology(
-        dataset: DatasetBundle,
-        audit_report: dict[str, Any] | None = None,
-    ) -> bool:
-        return preflight.detect_manifold_topology(dataset, audit_report)
-
-    @staticmethod
-    def _apply_highdim_reduction(
-        dataset: DatasetBundle,
-        trace: list[str],
-    ) -> DatasetBundle | None:
-        return preflight.apply_highdim_reduction(dataset, trace)
-
-    @staticmethod
-    def _apply_hard_dim_reduction(
-        dataset: DatasetBundle,
-        target_dim: int,
-        trace: list[str],
-        *,
-        modality: ModalityProfile | None = None,
-    ) -> DatasetBundle | None:
-        return preflight.apply_hard_dim_reduction(
-            dataset, target_dim, trace, modality=modality,
-        )
-
-    @staticmethod
-    def _subsample_large_dataset(
-        dataset: DatasetBundle,
-        max_samples: int = 10_000,
-        trace: list[str] | None = None,
-    ) -> DatasetBundle | None:
-        return preflight.subsample_large_dataset(dataset, max_samples, trace)
-
-    @staticmethod
-    def _compute_data_cost_budget(dataset: DatasetBundle) -> dict[str, Any]:
-        return preflight.compute_data_cost_budget(dataset)
-
-    def _apply_manifold_preprocessing(
-        self,
-        dataset: DatasetBundle,
-        trace: list[str],
-    ) -> DatasetBundle | None:
-        return preflight.apply_manifold_preprocessing(dataset, trace)
 
     # ------------------------------------------------------------------
     # FOLLOW_UP 路径
@@ -1440,56 +1318,6 @@ class ACESupervisor:
         )
         # 不更新 self.last_report（不覆盖上次真实分析结果）
         return report
-
-    # ------------------------------------------------------------------
-    # Phase 6: Fast Hopkins pre-check (gatekeeper before expert dispatch)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _fast_hopkins(X: np.ndarray, n_samples: int = 200, seed: int = 42) -> float:
-        return preflight.fast_hopkins(X, n_samples, seed)
-
-    # ------------------------------------------------------------------
-    # 辅助方法
-    # ------------------------------------------------------------------
-
-    def _prepare_output_dir(self, name: str) -> Path:
-        return preflight.prepare_output_dir(name)
-
-    def _save_raw_plot(self, dataset: DatasetBundle, out_dir: Path) -> Path:
-        return preflight.save_raw_plot(dataset, out_dir)
-
-    # ------------------------------------------------------------------
-    # Phase 5.1: Informed ranking — ARI one-vote veto when labels exist
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_informed_ranking(
-        all_results: list[AlgorithmRunResult],
-        dataset: DatasetBundle,
-        trace: list[str],
-        centroid_ban: set[str] | None = None,
-        blocked_algorithms: list[str] | None = None,
-        *,
-        modality: ModalityProfile | None = None,
-    ) -> list[AlgorithmRunResult]:
-        return _ranking.compute_informed_ranking(
-            all_results, dataset, trace, centroid_ban, blocked_algorithms,
-            modality=modality,
-        )
-
-    # ------------------------------------------------------------------
-    # Phase 5: Cross-validation check for graph algorithm winners
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _cross_validate_graph_winner(
-        best: AlgorithmRunResult,
-        dataset: DatasetBundle,
-        all_results: list[AlgorithmRunResult],
-        trace: list[str],
-    ) -> None:
-        _ranking.cross_validate_graph_winner(best, dataset, all_results, trace)
 
     # ------------------------------------------------------------------
     # Error / fallback report

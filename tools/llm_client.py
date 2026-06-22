@@ -362,7 +362,7 @@ class UniversalLLMClient:
                     error_msg = f"Primary: {error_msg} | Fallback: {exc2}"
                     reply = f"Error: {error_msg}"
             else:
-                reply = f"Error during LLM call: {error_msg}"
+                reply = f"Error: LLM call failed: {error_msg}"
 
         latency_ms = int((time.monotonic() - t0) * 1000)
         completion_tokens = count_tokens(reply) if reply and not reply.startswith("Error:") else 0

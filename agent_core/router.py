@@ -104,6 +104,6 @@ class MasterRouter:
             # 兜底：router 异常时 fallback 到 FOLLOW_UP 而非 NEW_TASK，
             # 避免误触发昂贵的新任务流程
             return {
-                "intent": "FOLLOW_UP" if ("?" in prompt or "？" in prompt) else "FOLLOW_UP",
+                "intent": "FOLLOW_UP",
                 "reasoning": "语义解析异常，安全兜底为 FOLLOW_UP",
             }
