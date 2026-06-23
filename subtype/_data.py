@@ -50,6 +50,23 @@ def filter_labeled(expr: pd.DataFrame, pheno: pd.DataFrame, subtype_col: str):
     return expr.loc[keep], pheno.loc[keep], n_drop
 
 
+def exclude_normal_tissue(expr: pd.DataFrame, pheno: pd.DataFrame):
+    """剔除癌旁正常组织样本，做纯肿瘤分型。
+    TCGA 条码第 4 段前两位=样本类型码：01-09 肿瘤，10-19 正常，20+ 对照。
+    """
+    def is_tumor(bc: str) -> bool:
+        parts = str(bc).split("-")
+        if len(parts) < 4 or len(parts[3]) < 2:
+            return True  # 无法判定则保留
+        try:
+            return int(parts[3][:2]) < 10
+        except ValueError:
+            return True
+    mask = pheno.index.to_series().map(is_tumor).to_numpy()
+    keep = pheno.index[mask]
+    return expr.loc[keep], pheno.loc[keep], int((~mask).sum())
+
+
 def preprocess(expr: pd.DataFrame, top_genes: int = 1000, n_pcs: int = 50, seed: int = 42):
     """log 稳方差 → 选高变(MAD)基因 → 标准化 → PCA 降噪。返回 (X_genes, Xp_pca, evr)。"""
     X = expr.to_numpy(dtype=float)
