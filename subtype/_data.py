@@ -50,6 +50,13 @@ def filter_labeled(expr: pd.DataFrame, pheno: pd.DataFrame, subtype_col: str):
     return expr.loc[keep], pheno.loc[keep], n_drop
 
 
+def top_mad_genes(Xdf: pd.DataFrame, n: int) -> list:
+    """按 MAD(中位绝对偏差)选前 n 个高变特征(基因)。"""
+    X = Xdf.to_numpy(float)
+    mad = np.median(np.abs(X - np.median(X, axis=0)), axis=0)
+    return Xdf.columns[np.argsort(mad)[::-1][:n]].tolist()
+
+
 def exclude_normal_tissue(expr: pd.DataFrame, pheno: pd.DataFrame):
     """剔除癌旁正常组织样本，做纯肿瘤分型。
     TCGA 条码第 4 段前两位=样本类型码：01-09 肿瘤，10-19 正常，20+ 对照。
