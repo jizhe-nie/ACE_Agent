@@ -32,30 +32,27 @@ ROOT = Path("data/dlpfc/extracted/DLPFC12")
 SAMPLES = ["151507", "151670", "151673"]
 
 
-def phikon_feats(sample, coords, r=48, bs=128):
-    """注：全分辨率 tif 损坏(0页)，回退 hires PNG(与上轮 ImageNet 同输入, 隔离'编码器')。
-    r=48 → 96px hires patch(spot~14px+上下文)，processor 内部缩放到 224。"""
-    import json as _json
+def phikon_feats(sample, coords, r=112, bs=64):
+    """公平测试：读**完整全分辨率 tif**(spatialLIBD S3, 533MB)，每 spot 取 224px 原生 patch(不缩放糊化)。
+    coords=(pxl_row,pxl_col) 已是全分辨率坐标。"""
+    import tifffile
     from transformers import AutoImageProcessor, AutoModel
     mp = "data/phikon"
     proc = AutoImageProcessor.from_pretrained(mp)
     model = AutoModel.from_pretrained(mp).eval().to(DEV)
-    sd = ROOT / sample
-    sf = _json.load(open(sd / "spatial" / "scalefactors_json.json"))["tissue_hires_scalef"]
-    arr = np.asarray(Image.open(sd / "spatial" / "tissue_hires_image.png"))[:, :, :3]
+    arr = tifffile.imread(ROOT / sample / f"{sample}_full_image.tif")[:, :, :3]
     H, W = arr.shape[:2]
     arr = np.pad(arr, ((r, r), (r, r), (0, 0)), mode="reflect")
     patches = []
     for (pr, pc) in coords:  # pr=row(y), pc=col(x) fullres
-        cy = int(round(pr * sf)) + r; cx = int(round(pc * sf)) + r
-        cy = min(max(cy, r), H + r - 1); cx = min(max(cx, r), W + r - 1)
-        patches.append(Image.fromarray(arr[cy - r:cy + r, cx - r:cx + r]))
+        y = int(round(pr)) + r; x = int(round(pc)) + r
+        y = min(max(y, r), H + r - 1); x = min(max(x, r), W + r - 1)
+        patches.append(Image.fromarray(arr[y - r:y + r, x - r:x + r]))
     feats = []
     with torch.no_grad():
         for i in range(0, len(patches), bs):
             inp = proc(images=patches[i:i + bs], return_tensors="pt").to(DEV)
-            out = model(**inp).last_hidden_state[:, 0, :]  # CLS, 768-d
-            feats.append(out.cpu().numpy())
+            feats.append(model(**inp).last_hidden_state[:, 0, :].cpu().numpy())
     return np.vstack(feats)
 
 
