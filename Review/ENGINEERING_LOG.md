@@ -907,3 +907,18 @@ Phikon 取 224px 原生高清 patch + 表达，公平对比。
 
 **结论(诚实)**：BRCA 饱和 + ST 靶真但创新探针全不亮——**个人从零冲一区 SOTA 这条路已尽力探到底，未果。**
 下一步**不是再探**，而是**复位**：把已建资产(ST 全流程/基线/严谨评估)整理成扎实二区方法论，或重订整个项目路线。待 PM 定。
+
+## 日志 #0031 — 2026-06-24 — 项目规整 + 完整复盘文档
+
+**类型**：清理 + 文档 · **关联**：`docs/RETROSPECTIVE_2026-06-24.md`(完整复盘)
+**PM 要求**：规整项目、删无用文件；写从头到now 的完整复盘供与老师讨论。
+
+**已清理(无歧义，多为 gitignore/生成物，仅 1 个已跟踪 outputs/.gitkeep)**：
+- 缓存：.mypy_cache(109M)/.ruff_cache/.pytest_cache/.pytest_tmp/__pycache__；运行时：.ace_*.json；产物：outputs(37M)/benchmark_cache。
+- 弃用数据：data/{brca,brca_metabric,MNIST,cifar*,cache,user_uploads,test_rice_seeds.csv}、cluster_data(心音残留)、dlpfc/DLPFC12.zip(已解压)。
+- **释放 ~3.7GB**；data/ 5.2G→2.0G(留 ST 用 dlpfc/extracted+phikon)。.git(2.9G,历史大文件)**未动**(重写历史有险且未要求)。
+
+**完整复盘**：`docs/RETROSPECTIVE_2026-06-24.md`——自包含，含时间线表/各阶段发现/方法学教训/当前资产/前路选项/关键数字。
+
+**待 PM 决策(最后一块清理)**：① 老 ACE 弃用代码(agent_core/expert_sub_agents/tools/benchmark/tests/web_demo/agent_brain/scripts + 根配置)
+② docs/ 旧聚类综述 PDF(~33M)——删除 / 移到 legacy/ 归档 / 保留？(均 git 可恢复)
