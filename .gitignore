@@ -17,6 +17,7 @@ output/*
 plots/*
 !plots/.gitkeep
 subtype/outputs/
+st/outputs/
 
 # Session & runtime data
 .ace_sessions.json
