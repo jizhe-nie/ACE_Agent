@@ -751,3 +751,28 @@ README/CLAUDE.md 早已写明此要求，是我没遵守。base 的非预期 tor
 (a) 在我们这份数据上确认真实天花板(~0.6)，(b) 给后续创新一个可信对照。我的 GCN-AE 留作"起点/最弱基线"。
 **下一步**：装 GraphST（或 STAGATE_pyG，需 torch-geometric）→ 复现 ~0.6 → 再进 W3 找创新点（可能方向：注意力/对比/多切片/图构建/可扩展性）。
 诚实：手搓基线没达标是正常研究节奏；用官方方法定基线是规范做法，不丢人。
+
+## 日志 #0025 — 2026-06-24 — ST-W2 完成：官方 GraphST SOTA 基线确立✅
+
+**类型**：修改 + 验证（里程碑）· **环境**：Tumor_Subtype_Agent（GPU cuda）· **关联**：`st/03_graphst_baseline.py`
+**做了什么**：装官方 GraphST（`--no-deps` 保护 GPU torch + 补 POT/scikit-misc）；在 151673 上跑 GraphST →
+取 embedding → GMM(k=7) + 空间近邻精修 → ARI（3 seeds）。
+
+**结果（151673, k=7, GPU）**：
+| 方法 | ARI |
+|---|---|
+| 非空间 KMeans/PCA | 0.201 |
+| 我的 GCN-AE | 0.336 |
+| **GraphST(官方) + GMM + 精修** | **~0.54 ± 0.03**（0.50/0.58/0.53；raw~0.50） |
+| GraphST 论文(R mclust) | ~0.63 |
+
+**说明**：与论文 0.63 的差距来自**聚类器**（论文 R mclust，我用 Python GMM）。**为公平比较，后续我方法也用同一 GMM+精修**，
+隔离"表示"优劣（GraphST+GMM 0.54 = 受控 SOTA 基线 = 要打败的对象）。
+
+**ST-W2 完成**：靶验证(W1) + 弱基线(GCN-AE) + SOTA 基线(GraphST) 全部就位，指标/基准明确。
+**依赖踩坑**：GraphST 需 `POT` + `scikit-misc`（seurat_v3 HVG）；用 `--no-deps` 防降级 torch。
+
+**下一步 ST-W3（找真创新点）**：
+① 先扩到**全 12 样本 DLPFC 基准**（SOTA 论文报 12 样本均值；需此表才能下任何"超越"结论；GraphST×12×多seed 较久，可批量/后台）。
+② 选一个**具体创新机制**去超越 GraphST（候选：注意力+对比融合 / 多切片整合 / 更优图构建 / 可扩展性 / 组织图像多模态）——待与 PM 共定。
+诚实：现在才到"有真基线、可量化超越"的起点；W3 才是真创新，难，但这次站在对的问题上。
