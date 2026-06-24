@@ -1,0 +1,140 @@
+import json
+import logging
+import os
+from pathlib import Path
+
+import chromadb
+from chromadb.utils import embedding_functions
+from loguru import logger
+
+# 强制禁言 transformers 和 chromadb 的底层日志
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["HF_HUB_OFFLINE"] = "1"
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+
+
+class KnowledgeEngine:
+    """优化版知识引擎：支持静默加载与可靠去重
+
+    SentenceTransformer 模型延迟加载 — 仅在首次 query() 调用时初始化，
+    避免启动时一次性加载所有重型库（PyTorch + transformers + model）。
+    """
+
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = str(Path(__file__).resolve().parent / "memory_vdb")
+        self.db_path = db_path
+        self.manifest_path = Path(db_path) / "ingested_manifest.json"
+        self._embed_fn: object | None = None
+        self._embed_init_attempted: bool = False
+
+        # ChromaDB client — lightweight, no model needed yet
+        self.client = chromadb.PersistentClient(path=db_path)
+        # Use a placeholder collection initially; real one with embeddings is
+        # created lazily in _ensure_embed_fn()
+        self.collection: object | None = None
+        self._collection_ready: bool = False
+
+        # Load ingested files manifest (lightweight JSON read)
+        self.ingested_files = self._load_manifest()
+
+    def _ensure_embed_fn(self) -> bool:
+        """Lazy-init the embedding model and ChromaDB collection.
+
+        Called on first query() or ingest_docs(). Returns True if ready.
+        """
+        if self._collection_ready:
+            return True
+        if self._embed_init_attempted:
+            return False
+        self._embed_init_attempted = True
+
+        try:
+            self._embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+            self.collection = self.client.get_or_create_collection(
+                name="ace_knowledge", embedding_function=self._embed_fn
+            )
+            self._collection_ready = True
+            return True
+        except Exception as e:
+            logger.error(f"Embedding 模型加载失败: {e}")
+            self._embed_fn = None
+            self._collection_ready = False
+            return False
+
+    def ingest_docs(self, docs_dir: str | None = None):
+        """扫描并入库，只处理新文件。模型延迟到首次调用时才加载。"""
+        if docs_dir is None:
+            docs_dir = str(Path(__file__).resolve().parents[1] / "docs")
+        docs_path = Path(docs_dir)
+        if not docs_path.exists():
+            return
+
+        new_files = []
+        for file_path in docs_path.glob("*.*"):
+            if file_path.suffix.lower() in [".txt", ".md", ".pdf"] and file_path.name not in self.ingested_files:
+                new_files.append(file_path)
+
+        if not new_files:
+            return
+
+        if not self._ensure_embed_fn():
+            logger.warning("Embedding 模型不可用，跳过文档入库。")
+            return
+
+        for file_path in new_files:
+            logger.info(f"📚 正在索引新知识: {file_path.name}...")
+            content = self._read_file(file_path)
+            if content:
+                chunks = [content[i : i + 800] for i in range(0, len(content), 600)]
+                ids = [f"{file_path.name}_{i}" for i in range(len(chunks))]
+                metadatas = [{"source": file_path.name} for _ in range(len(chunks))]
+
+                self.collection.add(documents=chunks, ids=ids, metadatas=metadatas)
+                self.ingested_files.add(file_path.name)
+
+        self._save_manifest()
+        logger.success(f"✅ 知识库更新完成，新增 {len(new_files)} 个文档。")
+
+    def query(self, text: str, n_results: int = 3) -> str:
+        """语义检索。模型在首次调用时延迟加载。"""
+        if not self._ensure_embed_fn():
+            return ""
+        try:
+            results = self.collection.query(query_texts=[text], n_results=n_results)
+            if not results or not results["documents"][0]:
+                return ""
+            context = "\n---\n".join(results["documents"][0])
+            return f"\n【参考背景知识】:\n{context}\n"
+        except Exception:
+            return ""
+
+    def _read_file(self, path: Path) -> str:
+        try:
+            if path.suffix.lower() == ".pdf":
+                from pypdf import PdfReader
+
+                return " ".join([p.extract_text() for p in PdfReader(path).pages])
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+    def _load_manifest(self) -> set:
+        if self.manifest_path.exists():
+            try:
+                return set(json.loads(self.manifest_path.read_text()))
+            except Exception:
+                return set()
+        return set()
+
+    def _save_manifest(self):
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.manifest_path.write_text(json.dumps(list(self.ingested_files)))
+
+
+if __name__ == "__main__":
+    engine = KnowledgeEngine()
+    engine.ingest_docs()

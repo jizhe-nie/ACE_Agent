@@ -922,3 +922,15 @@ Phikon 取 224px 原生高清 patch + 表达，公平对比。
 
 **待 PM 决策(最后一块清理)**：① 老 ACE 弃用代码(agent_core/expert_sub_agents/tools/benchmark/tests/web_demo/agent_brain/scripts + 根配置)
 ② docs/ 旧聚类综述 PDF(~33M)——删除 / 移到 legacy/ 归档 / 保留？(均 git 可恢复)
+
+## 日志 #0032 — 2026-06-24 — 归档老 ACE 到 legacy/，工作区规整完成
+
+**类型**：清理 · **PM 定**：归档到 legacy/。已确认 st/subtype 不 import 老 ACE，安全。
+**已移入 `legacy/`**：agent_core / expert_sub_agents / tools / benchmark / tests / agent_brain / scripts /
+web_demo.py / Dockerfile / mypy.ini / .pre-commit-config.yaml / pyproject.toml / requirements*.txt / __init__.py / .github(CI) /
+docs_pdfs(旧聚类综述 PDF)。git 记为重命名，历史完整可恢复。
+
+**规整后顶层(干净)**：`st/`(当前 ST) `subtype/`(BRCA 探索记录) `docs/`(md 研判+手册) `Review/`(工程日志+fix) `data/`(gitignore, ST 数据) `legacy/`(归档) + README/CLAUDE.md。
+**注**：README.md 仍描述老 ACE(已过时)，CLAUDE.md 亦含老 ACE 架构——后续若定方向再更新；本轮未改(超出清理范围)。
+
+**项目规整 + 完整复盘(#0031) 全部完成。** 下一步等 PM 与老师讨论后定方向(复位/换题/合作)。

@@ -1,0 +1,14 @@
+{
+  "distance_logic": {
+    "high_correlation": "prefer_whiten_or_reduce_dimension",
+    "manifold_structure": "prefer_embedding_before_clustering",
+    "noise_or_outliers": "prefer_density_or_graph_based_methods",
+    "compact_clusters": "prefer_euclidean_centroid_methods"
+  },
+  "evaluation_logic": {
+    "external_metrics": ["adjusted_mutual_info", "adjusted_rand_index"],
+    "internal_metrics": ["silhouette", "davies_bouldin", "calinski_harabasz"],
+    "selection_rule": "maximize composite score with AMI and silhouette weighted highest"
+  }
+}
+
