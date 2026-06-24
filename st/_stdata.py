@@ -58,3 +58,26 @@ def ari_nmi(labels, gt):
 
 def n_layers(ad, gt_key="ground_truth"):
     return int(pd.Categorical(ad.obs[gt_key][ad.obs[gt_key].notna()]).categories.size)
+
+
+def refine(labels, coords, k=50):
+    """空间近邻多数投票精修(GraphST 标准后处理)。"""
+    from sklearn.neighbors import NearestNeighbors
+    labels = np.asarray(labels)
+    nn = NearestNeighbors(n_neighbors=min(k, len(labels))).fit(coords)
+    _, idx = nn.kneighbors(coords)
+    out = labels.copy()
+    for i in range(len(labels)):
+        v, c = np.unique(labels[idx[i]], return_counts=True)
+        out[i] = v[c.argmax()]
+    return out
+
+
+def get_emb(adata):
+    """从 GraphST 训练后的 adata 取 embedding(高维则 PCA 到 20)。"""
+    from sklearn.decomposition import PCA
+    for key in ("emb_pca", "emb", "GraphST", "feat"):
+        if key in adata.obsm:
+            E = np.asarray(adata.obsm[key])
+            return PCA(20, random_state=0).fit_transform(E) if E.shape[1] > 30 else E
+    raise KeyError(f"no GraphST embedding; obsm={list(adata.obsm.keys())}")
